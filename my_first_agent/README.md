@@ -7,16 +7,16 @@
 
 ### System Designer Name
 
-[Enter your name.]
+Nick Gonzalez
 
 
 ### System Name
 
-[Use a default name "HackTrack" or enter the name you choose for the system.]
+HackTrack
 
 ### System Goal
-[Read Chapter 2 Section 2.1, then enter the well-structured goal of your agentic system]
+For hackathon organizers, the goal is to increase the percentage of participants who remain registered 48 hours before the event and check in from 40% to 80% at the next hackathon, while producing an attendance forecast at that cutoff that is within 5% of actual check-ins; the project will focus on the period from registration through event check-in.
 
 ### Who Is Better Off When This Works?
 
-[In one complete sentence, identify who will be better off when the system works.]
+The primary beneficiaries will be the hackathon organizers so that they can plan for food, staff, material, and schedules around a more dependable turnout.
