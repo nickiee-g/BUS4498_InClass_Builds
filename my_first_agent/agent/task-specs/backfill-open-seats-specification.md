@@ -4,7 +4,7 @@
 # BASIC INFORMATION
 task_id: "T6"
 task_name: "Offer open seat"
-task_owner: "Hackathon Team Manager fills open seat"
+task_owner: "Hackathon Registration and Attendance Planning Agent, Hackathon Team Manager fills open seat"
 ```
 
 ## 1. Task Goal
@@ -14,15 +14,16 @@ task_owner: "Hackathon Team Manager fills open seat"
 
 ## 2. Inbound Inputs
 
-*Remove this instruction before your submission.* Describe what the enclosing workflow must provide. Describe the structure of each input; do not invent customer, employee, or event data.
-
 ### Input 1
 
-- **Input name:** [Short name]
-- **What it contains:** [Information the agent receives]
-- **Source:** [Task or person that provides it]
+**Input Name:** Updated Participant Status Data
+**What it contains:** The updated roster or data feed showing which participants have canceled, revealing the exact number of open seats that need to be backfilled.
+**Source:** T5: Update participant status
 
-*Copy the “Input” block for each additional input.*
+### Input 2
+**Input Name:** Waitlist Data
+**What it contains:** The contact information and queue order of participants who are currently waiting for an available seat. 
+**Source:** T2: Track participant status
 
 ## 3. Tool Permissions and Boundaries
 
