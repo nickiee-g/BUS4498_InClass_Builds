@@ -28,8 +28,6 @@ task_owner: "Hackathon Registration and Attendance Planning Agent, Hackathon Tea
 
 ## 4. How the Agent Should Reason
 
-*Remove this instruction before your submission.* Define the kinds of work the agent is permitted to perform. Do not prescribe a fixed sequence. The agent chooses its next subtask using intermediate findings and may skip, repeat, or combine permitted subtasks within the limits above. Individual subtasks do not all have to be Level 3. Copy the “Permitted Subtask” block for each additional kind of work the agent may perform.
-
 ### Permitted Subtask 1
 
 - **Subtask name:** [Use a verb-object name.]
