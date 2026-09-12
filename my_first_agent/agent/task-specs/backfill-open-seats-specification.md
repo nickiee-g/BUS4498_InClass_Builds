@@ -1,28 +1,27 @@
-# backfill-open-seats Task Specification
+# offer-open-seats Task Specification
 
 ```yaml
 # BASIC INFORMATION
-task_id: "T6"
+task_id: "T7"
 task_name: "Offer open seat"
 task_owner: "Hackathon Registration and Attendance Planning Agent, Hackathon Team Manager fills open seat"
 ```
 
 ## 1. Task Goal
 
-- Evaluate the waitlist, conduct outreach to the next available candidates, interpret their availability or conditional replies, and secure confirmed attendees to fill all open seats without exceeding venue capacity.
+- Autonomously manage two-way communication with a selected waitlist candidate, interpret and resolve unstructured event questions or conditional scheduling requests. Then secure a firm attendance confirmation to ensure accurate event headcount and resource management.
 
 ## 2. Inbound Inputs
 
 ### Input 1
-
-**Input Name:** Updated Participant Status Data
-**What it contains:** The updated roster or data feed showing which participants have canceled, revealing the exact number of open seats that need to be backfilled.
-**Source:** T5: Update participant status
+**Input Name:** Selected Candidate Contact Information
+**Contents:** The name and contact info of the eligible waitlisted individual pulled from the roster.
+**Source:** T6: Backfill open seats (D7)
 
 ### Input 2
-**Input Name:** Waitlist Data
-**What it contains:** The contact information and queue order of participants who are currently waiting for an available seat. 
-**Source:** T2: Track participant status
+**Input Name:** Hackathon Event Details and Policies
+**Contents:** The schedule, location, and catering details of the hackathon, used by the agent to answer participant questions during the offer negotiation.
+**Source:** CPVC event organizers (System knowledge base)
 
 ## 3. Tool Permissions and Boundaries
 
