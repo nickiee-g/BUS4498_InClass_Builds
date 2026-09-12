@@ -1,4 +1,4 @@
-# [replace-with-your-task-name] Task Specification
+# backfill-open-seats Task Specification
 
 Create one copy of this template for each Level 3 task identified in class (For this in-class build practice, having one Level 3 task is sufficient).
 
