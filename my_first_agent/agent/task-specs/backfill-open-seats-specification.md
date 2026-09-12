@@ -9,8 +9,7 @@ task_owner: "Hackathon Registration and Attendance Planning Agent, Hackathon Tea
 
 ## 1. Task Goal
 
-- This task involves the human decision to offer an open seat to an individual who wishes to participate in the upcoming hack-a-thon based on previous tasks
-
+- Evaluate the waitlist, conduct outreach to the next available candidates, interpret their availability or conditional replies, and secure confirmed attendees to fill all open seats without exceeding venue capacity.
 
 ## 2. Inbound Inputs
 
