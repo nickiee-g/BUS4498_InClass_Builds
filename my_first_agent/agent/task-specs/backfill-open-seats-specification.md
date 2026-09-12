@@ -2,14 +2,14 @@
 
 ```yaml
 # BASIC INFORMATION
-task_id: "[Existing task ID]"
-task_name: "[Exact task name from the workflow]"
-task_owner: "[Person or team accountable for this task]"
+task_id: "T6"
+task_name: "Offer open seat"
+task_owner: "Hackathon Team Manager fills open seat"
 ```
 
 ## 1. Task Goal
 
-- **Objective:** [What business result should this task produce?]
+- This task involves the human decision to offer an open seat to an individual who wishes to participate in the upcoming hack-a-thon based on previous tasks
 
 
 ## 2. Inbound Inputs
