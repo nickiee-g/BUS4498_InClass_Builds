@@ -15,7 +15,7 @@ Nick Gonzalez
 HackTrack
 
 ### System Goal
-For hackathon organizers, the goal is to increase the check-in rate among participants registered 48 hours before the event from 40% to 80% at the next hackathon, with attendance forecasts made at that cutoff within 5% of actual check-ins; the project covers the period from registration through event check-in.
+For hackathon organizers, the goal is to increase the check-in rate among participants registered 48 hours before the event from 40% to 80% at the next hackathon, with attendance forecasts made at that cutoff within 5% of actual check-ins; the project covers the period from registration through event check-in. This process should be done without sending excessive communication to participants or admitting more attendees than the venue capacity allows.
 
 ### Who Is Better Off When This Works?
 
