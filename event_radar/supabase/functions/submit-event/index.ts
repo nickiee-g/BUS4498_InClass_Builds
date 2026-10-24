@@ -2,6 +2,8 @@
 //
 // It reads one club announcement, asks an AI model to turn it into an event card, applies the
 // posting rules, and saves the result in the database (the public.events table).
+// It also accepts an optional flyer photo, saves it in Supabase Storage (the "flyers" bucket),
+// and lets the AI read it.
 //
 // The AI key lives in Supabase Secrets (ANTHROPIC_API_KEY or OPENAI_API_KEY). It never goes in GitHub.
 // Deploy with JWT verification off (verify_jwt = false): the website calls this with the publishable key.
@@ -14,6 +16,8 @@ const OPENAI_MODEL = "gpt-6-luna";
 const DAILY_LIMIT = 100; // spending guard: at most this many posts in any 24 hours
 const MAX_TEXT = 2000;
 const DAYS_AHEAD = 60;
+const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
+const PHOTO_TYPES = ["image/jpeg", "image/png"];
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -268,6 +272,12 @@ Deno.serve(async (req) => {
     } else {
       const form = await req.formData();
       announcement = String(form.get("announcement") ?? "");
+      const file = form.get("flyer");
+      if (file instanceof File && file.size > 0) {
+        if (!PHOTO_TYPES.includes(file.type)) throw new PostError("The photo must be a JPG or PNG.");
+        if (file.size > MAX_PHOTO_BYTES) throw new PostError("The photo must be 5 MB or smaller.");
+        photo = { bytes: new Uint8Array(await file.arrayBuffer()), type: file.type };
+      }
     }
     announcement = announcement.trim();
     if (!announcement) throw new PostError("Paste the announcement text first.");
@@ -328,6 +338,19 @@ Deno.serve(async (req) => {
       throw new PostError("The database couldn't save this post. Check the function logs.", 500);
     }
 
+    // Save the flyer in Supabase Storage, named after the post.
+    if (photo) {
+      const path = `${saved.id}.${photo.type === "image/png" ? "png" : "jpg"}`;
+      const up = await db.storage.from("flyers").upload(path, photo.bytes, { contentType: photo.type, upsert: true });
+      if (up.error) {
+        console.error("Photo upload failed", up.error);
+        await db.from("events").update({ status_reason: `${row.status_reason} The photo couldn't be saved.` }).eq("id", saved.id);
+      } else {
+        const flyerUrl = db.storage.from("flyers").getPublicUrl(path).data.publicUrl;
+        await db.from("events").update({ flyer_url: flyerUrl }).eq("id", saved.id);
+        saved.flyer_url = flyerUrl;
+      }
+    }
 
     return reply(200, { ok: true, status, message: MESSAGES[status], reasons, event: saved });
   } catch (err) {

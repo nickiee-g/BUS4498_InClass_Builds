@@ -1,68 +1,77 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Find campus club events or share an announcement with the Club Event Radar.">
-  <meta name="theme-color" content="#fbf7f2">
-  <title>Club Event Radar | BUS 4498</title>
-  <link rel="stylesheet" href="style.css">
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js"></script>
-  <script src="config.js" defer></script>
-  <script src="app.js" defer></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Club Event Radar</title>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header class="top">
-    <div class="wrap">
-      <p class="kicker">BUS 4498 · Cal Poly</p>
-      <h1>Club Event Radar</h1>
-      <p class="lede">Find something happening on campus, or share an announcement with the club community.</p>
-      <ul class="badges" aria-label="Website features">
-        <li>Campus clubs</li>
-        <li>Upcoming events</li>
-        <li>Free food filter</li>
-      </ul>
+<header class="top">
+  <div class="wrap">
+    <p class="kicker">Campus clubs · practice website</p>
+    <h1>Club Event Radar</h1>
+    <p class="lede">Paste a club announcement. An AI agent turns it into an event card, checks the posting rules, and catches duplicates.</p>
+    <ul class="badges">
+      <li>🤖 Cards drafted by an AI agent</li>
+      <li>✅ Checked against posting rules</li>
+      <li>🧑‍⚖️ Unclear posts go to a moderator</li>
+    </ul>
+  </div>
+</header>
+
+<main class="wrap layout">
+  <section class="card post" aria-labelledby="postTitle">
+    <h2 id="postTitle">Post an event</h2>
+    <form id="postForm">
+      <label for="announcement">Announcement <span class="hint">Paste the Instagram caption, group-chat message, or flyer text.</span></label>
+      <textarea id="announcement" name="announcement" rows="6" maxlength="2000" required placeholder="Board Game Guild: Game Night! Thursday, 7 to 10 pm in the University Union, Room 220. Free pizza!"></textarea>
+      <label for="flyer">Flyer photo <span class="hint">Optional. JPG or PNG, up to 5 MB. Posts with a photo wait for a moderator.</span></label>
+      <input id="flyer" name="flyer" type="file" accept="image/jpeg,image/png">
+      <button type="submit" id="postBtn">Post it</button>
+    </form>
+    <div id="postResult" class="result" role="status" aria-live="polite" hidden></div>
+  </section>
+
+  <section class="board-section" aria-labelledby="boardTitle">
+    <div class="board-head">
+      <h2 id="boardTitle">Coming up</h2>
+      <button type="button" class="ghost" id="refreshBtn">Refresh</button>
     </div>
-  </header>
+    <p id="boardStatus" class="muted" role="status"></p>
+    <ul id="board" class="board"></ul>
 
-  <main class="wrap layout">
-    <section class="card post" aria-labelledby="post-heading">
-      <h2 id="post-heading">Share an event</h2>
-      <p class="muted">Paste the announcement as your club shared it. The event helper will review it before it appears here.</p>
-      <form id="post-form">
-        <label for="announcement">Event announcement
-          <span class="hint">Include the date, start time, and place. Up to 2,000 characters.</span>
-        </label>
-        <textarea id="announcement" name="announcement" maxlength="2000" required placeholder="Example: Board Game Guild: Game Night! Thursday, October 29, 7 to 10 pm in the University Union, Room 220. Free entry and free pizza while it lasts."></textarea>
-        <button id="submit-button" type="submit">Review announcement</button>
-      </form>
-      <div id="post-result" class="result" role="status" aria-live="polite" hidden>
-        <p id="result-label" class="result-label"></p>
-        <p id="result-message"></p>
-        <ul id="result-reasons" class="reasons" hidden></ul>
+    <details class="card mod">
+      <summary>Moderator sign-in</summary>
+      <div id="moderator-login">
+        <p class="muted">Sign in to review event posts waiting for approval.</p>
+        <form id="moderator-form">
+          <label for="moderator-email">Email</label>
+          <input id="moderator-email" name="email" type="email" autocomplete="username" required>
+          <label for="moderator-password">Password</label>
+          <input id="moderator-password" name="password" type="password" autocomplete="current-password" required>
+          <button id="moderator-signin" type="submit">Sign in</button>
+        </form>
       </div>
-    </section>
+      <div id="moderator-dashboard" hidden>
+        <p id="moderator-identity" class="muted"></p>
+        <button id="moderator-signout" class="ghost" type="button">Sign out</button>
+        <h3>Waiting for review</h3>
+        <p id="moderator-status" class="muted" role="status" aria-live="polite"></p>
+        <ul id="waiting-board" class="board"></ul>
+      </div>
+      <p id="moderator-message" class="muted" role="status" aria-live="polite" hidden></p>
+    </details>
 
-    <section class="board-section" aria-labelledby="events-heading">
-      <div class="board-head">
-        <div>
-          <p class="kicker">What's coming up</p>
-          <h2 id="events-heading">Campus events</h2>
-        </div>
-        <button id="refresh-button" class="ghost" type="button">Refresh</button>
-      </div>
-      <div class="filters" role="group" aria-label="Filter events">
-        <button class="chip" type="button" data-filter="all" aria-pressed="true">All events</button>
-        <button class="chip" type="button" data-filter="free" aria-pressed="false">Free</button>
-        <button class="chip" type="button" data-filter="food" aria-pressed="false">Free food</button>
-      </div>
-      <p id="events-message" class="muted" role="status" aria-live="polite">Loading events…</p>
-      <ul id="event-board" class="board" aria-label="Published campus events"></ul>
-    </section>
-  </main>
+  </section>
+</main>
 
-  <footer class="wrap foot">
-    <p>Club Event Radar is a BUS 4498 practice project. Event posts are reviewed using the project’s posting rules.</p>
-  </footer>
+<footer class="wrap foot">
+  <p>A practice website for BUS 4498. The clubs and events are made up. <span id="aiNote"></span></p>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
