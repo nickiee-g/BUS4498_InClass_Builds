@@ -79,20 +79,38 @@
   }
 
   /* ---------- the event list: published events only ---------- */
+  var allEvents = [];       // the last list loaded from the database
+  var freeFoodOnly = false; // the "Free food only" filter
+
+  function renderBoard() {
+    var list = $("board");
+    list.textContent = "";
+    var shown = freeFoodOnly ? allEvents.filter(function (ev) { return ev.free_food; }) : allEvents;
+    shown.forEach(function (ev) { list.appendChild(card(ev)); });
+    if (!shown.length) {
+      list.appendChild(el("li", "empty", freeFoodOnly && allEvents.length ? "No events with free food right now." : "No events yet. Post the first one!"));
+    }
+    var count = shown.length ? shown.length + (shown.length === 1 ? " event" : " events") : "";
+    $("boardStatus").textContent = count && freeFoodOnly ? count + " with free food" : count;
+  }
+
   function loadBoard() {
     $("boardStatus").textContent = "Loading…";
     db.from("events").select(PUBLIC_COLUMNS).eq("status", "published")
       .order("event_date", { ascending: true, nullsFirst: false })
       .order("start_time", { ascending: true, nullsFirst: false })
       .then(function (res) {
-        var list = $("board");
-        list.textContent = "";
-        if (res.error) { $("boardStatus").textContent = "Couldn't load events: " + res.error.message; return; }
-        res.data.forEach(function (ev) { list.appendChild(card(ev)); });
-        if (!res.data.length) list.appendChild(el("li", "empty", "No events yet. Post the first one!"));
-        $("boardStatus").textContent = res.data.length ? res.data.length + (res.data.length === 1 ? " event" : " events") : "";
+        if (res.error) { $("board").textContent = ""; $("boardStatus").textContent = "Couldn't load events: " + res.error.message; return; }
+        allEvents = res.data;
+        renderBoard();
       });
   }
+
+  $("freeFoodBtn").addEventListener("click", function () {
+    freeFoodOnly = !freeFoodOnly;
+    this.setAttribute("aria-pressed", String(freeFoodOnly));
+    renderBoard();
+  });
 
   /* ---------- moderator sign-in and review queue ---------- */
   var WAITING_COLUMNS = [
