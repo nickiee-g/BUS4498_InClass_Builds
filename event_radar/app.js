@@ -23,6 +23,8 @@
     "id", "title", "club", "event_date", "start_time", "end_time", "place_name", "place_detail", "cost", "free_food", "summary",
     "flyer_url",
   ].join(",");
+  var publishedEvents = [];
+  var freeFoodOnly = false;
 
   /* ---------- small helpers ---------- */
   function el(tag, cls, text) {
@@ -79,6 +81,7 @@
   }
 
   /* ---------- the event list: published events only ---------- */
+<<<<<<< Updated upstream
   var allEvents = [];       // the last list loaded from the database
   var freeFoodOnly = false; // the "Free food only" filter
 
@@ -92,6 +95,23 @@
     }
     var count = shown.length ? shown.length + (shown.length === 1 ? " event" : " events") : "";
     $("boardStatus").textContent = count && freeFoodOnly ? count + " with free food" : count;
+=======
+  function renderBoard() {
+    var list = $("board");
+    list.replaceChildren();
+    var visibleEvents = freeFoodOnly
+      ? publishedEvents.filter(function (ev) { return ev.free_food === true; })
+      : publishedEvents;
+    visibleEvents.forEach(function (ev) { list.appendChild(card(ev)); });
+    if (!visibleEvents.length) {
+      list.appendChild(el("li", "empty", publishedEvents.length
+        ? "No events with free food yet."
+        : "No events yet. Post the first one!"));
+    }
+    $("boardStatus").textContent = visibleEvents.length
+      ? visibleEvents.length + (visibleEvents.length === 1 ? " event" : " events")
+      : "";
+>>>>>>> Stashed changes
   }
 
   function loadBoard() {
@@ -100,15 +120,31 @@
       .order("event_date", { ascending: true, nullsFirst: false })
       .order("start_time", { ascending: true, nullsFirst: false })
       .then(function (res) {
+<<<<<<< Updated upstream
         if (res.error) { $("board").textContent = ""; $("boardStatus").textContent = "Couldn't load events: " + res.error.message; return; }
         allEvents = res.data;
+=======
+        if (res.error) {
+          publishedEvents = [];
+          $("board").replaceChildren();
+          $("boardStatus").textContent = "Couldn't load events: " + res.error.message;
+          return;
+        }
+        publishedEvents = res.data || [];
+>>>>>>> Stashed changes
         renderBoard();
       });
   }
 
+<<<<<<< Updated upstream
   $("freeFoodBtn").addEventListener("click", function () {
     freeFoodOnly = !freeFoodOnly;
     this.setAttribute("aria-pressed", String(freeFoodOnly));
+=======
+  $("freeFoodFilter").addEventListener("click", function () {
+    freeFoodOnly = !freeFoodOnly;
+    $("freeFoodFilter").setAttribute("aria-pressed", String(freeFoodOnly));
+>>>>>>> Stashed changes
     renderBoard();
   });
 
