@@ -3,8 +3,8 @@
 - Student: @nickiee-g
 - Website: https://nickiee-g.github.io/BUS4498_InClass_Builds/event_radar/
 - Folder: https://github.com/nickiee-g/BUS4498_InClass_Builds/tree/main/event_radar
-- Teammate: (add in Step 9)
-- Written by the BUS 4498 Hosting Builder on Oct 23, 2026, 5:17 PM.
+- Teammate: @bingyiwu1990
+- Written by the BUS 4498 Hosting Builder on Oct 23, 2026, 5:51 PM.
 
 ## Builder checks
 
