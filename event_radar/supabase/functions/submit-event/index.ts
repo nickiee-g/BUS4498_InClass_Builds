@@ -260,15 +260,19 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return reply(405, { ok: false, message: "Send a POST request." });
 
   try {
-    const ai = aiProvider();
-    if (!ai) throw new PostError("No AI key yet. Add ANTHROPIC_API_KEY or OPENAI_API_KEY in Edge Functions → Secrets.", 503);
-
     // Read the post: a form (from the website) or JSON.
     let announcement = "";
     let photo: Photo | null = null;
+    let source = "";
+    let sourceId = "";
+    let sourceName = "";
     const type = req.headers.get("content-type") ?? "";
     if (type.includes("application/json")) {
-      announcement = String((await req.json()).announcement ?? "");
+      const body = await req.json();
+      announcement = String(body.announcement ?? "");
+      source = String(body.source ?? "").trim().slice(0, 40);
+      sourceId = String(body.source_id ?? "").trim().slice(0, 200);
+      sourceName = String(body.source_name ?? "").trim().slice(0, 120);
     } else {
       const form = await req.formData();
       announcement = String(form.get("announcement") ?? "");
@@ -284,6 +288,27 @@ Deno.serve(async (req) => {
     if (announcement.length > MAX_TEXT) throw new PostError(`Keep the announcement under ${MAX_TEXT} characters.`);
 
     const db = createClient(Deno.env.get("SUPABASE_URL")!, serverKey(), { auth: { persistSession: false } });
+
+    // A chat message gets one decision, even when the reader retries after a timeout.
+    if (source && sourceId) {
+      const { data: alreadyRead, error: lookupError } = await db.from("events")
+        .select("id, title, club, event_date, start_time, place_name, status, created_at")
+        .eq("source", source).eq("source_id", sourceId).maybeSingle();
+      if (lookupError) throw new PostError("The database couldn't check whether this chat message was already read.", 500);
+      if (alreadyRead) {
+        return reply(200, {
+          ok: true,
+          status: "duplicate",
+          already_read: true,
+          message: "This chat message was already read.",
+          reasons: ["A decision for this chat message is already in the database."],
+          event: alreadyRead,
+        });
+      }
+    }
+
+    const ai = aiProvider();
+    if (!ai) throw new PostError("No AI key yet. Add ANTHROPIC_API_KEY or OPENAI_API_KEY in Edge Functions → Secrets.", 503);
 
     // Spending guard.
     const since = new Date(Date.now() - 86400000).toISOString();
@@ -318,10 +343,28 @@ Deno.serve(async (req) => {
       // One live post per date + start time + place. The database enforces it with a unique index.
       dedupe_key: status !== "rejected" && eventDate && startTime && placeCode ? `${eventDate}|${startTime}|${placeCode}` : null,
       ai_model: ai === "claude" ? CLAUDE_MODEL : OPENAI_MODEL,
+      source,
+      source_id: sourceId,
+      source_name: sourceName,
     };
 
     const { data: saved, error } = await db.from("events").insert(row).select().single();
     if (error) {
+      if (error.code === "23505" && source && sourceId) {
+        const { data: alreadyRead } = await db.from("events")
+          .select("id, title, club, event_date, start_time, place_name, status, created_at")
+          .eq("source", source).eq("source_id", sourceId).maybeSingle();
+        if (alreadyRead) {
+          return reply(200, {
+            ok: true,
+            status: "duplicate",
+            already_read: true,
+            message: "This chat message was already read.",
+            reasons: ["A decision for this chat message is already in the database."],
+            event: alreadyRead,
+          });
+        }
+      }
       if (error.code === "23505") {
         const { data: existing } = await db.from("events")
           .select("title, club, event_date, start_time, place_name, status, created_at")
