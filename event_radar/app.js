@@ -243,6 +243,7 @@
     if (session) {
       $("modWho").textContent = session.user.email;
       loadWaiting();
+      loadLessons();
     }
   }
   function review(ev, status) {
@@ -265,6 +266,62 @@
         loadBoard(true);
       });
   }
+  function saveLesson(text, fromPost) {
+    return db.from("lessons").insert({ lesson: text, created_by: session.user.email, from_post: fromPost || null });
+  }
+  function loadLessons() {
+    $("lessonsStatus").textContent = "Loading lessons…";
+    db.from("lessons").select("id, created_at, lesson, active, created_by, from_post").order("created_at", { ascending: false })
+      .then(function (res) {
+        var list = $("lessonList");
+        list.textContent = "";
+        if (res.error) { $("lessonsStatus").textContent = "Couldn't load lessons: " + res.error.message; return; }
+        res.data.forEach(function (lesson) {
+          var li = el("li", lesson.active ? "lesson" : "lesson off");
+          var details = el("div");
+          details.appendChild(el("p", "lesson-text", lesson.lesson));
+          details.appendChild(el("p", "lesson-meta", "By " + lesson.created_by + (lesson.from_post ? " · from a reviewed post" : "")));
+          li.appendChild(details);
+          var label = el("label", "switch");
+          var toggle = el("input");
+          toggle.type = "checkbox";
+          toggle.checked = Boolean(lesson.active);
+          toggle.setAttribute("aria-label", (lesson.active ? "Turn off" : "Turn on") + " lesson: " + lesson.lesson);
+          toggle.addEventListener("change", function () {
+            var active = toggle.checked;
+            toggle.disabled = true;
+            db.from("lessons").update({ active: active }).eq("id", lesson.id)
+              .then(function (update) {
+                if (update.error) {
+                  toggle.checked = !active;
+                  $("lessonsStatus").textContent = "Couldn't update that lesson: " + update.error.message;
+                } else {
+                  $("lessonsStatus").textContent = "Lesson " + (active ? "turned on." : "turned off.");
+                  loadLessons();
+                }
+              });
+          });
+          label.appendChild(toggle);
+          label.appendChild(el("span", "knob"));
+          li.appendChild(label);
+          list.appendChild(li);
+        });
+        if (!res.data.length) $("lessonsStatus").textContent = "No lessons yet.";
+        else $("lessonsStatus").textContent = res.data.length + (res.data.length === 1 ? " lesson" : " lessons");
+      });
+  }
+  $("teachForm").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var text = $("lessonText").value.trim();
+    if (text.length < 5 || text.length > 300) { $("lessonsStatus").textContent = "A lesson must be 5–300 characters."; return; }
+    $("teachBtn").disabled = true;
+    saveLesson(text, null).then(function (res) {
+      if (res.error) { $("lessonsStatus").textContent = "Couldn't save that lesson: " + res.error.message; return; }
+      $("teachForm").reset();
+      $("lessonsStatus").textContent = "Lesson saved.";
+      loadLessons();
+    }).then(function () { $("teachBtn").disabled = false; });
+  });
   function loadWaiting() {
     $("waitingStatus").textContent = "Loading…";
     db.from("events").select("*").eq("status", "waiting").order("created_at", { ascending: true })
@@ -281,8 +338,23 @@
           var approve = el("button", null, "Approve");
           var reject = el("button", "ghost", "Reject");
           approve.type = reject.type = "button";
+          var lessonLabel = el("label", "teach-inline", "Teach from this post (optional)");
+          var lessonInput = el("input");
+          lessonInput.type = "text";
+          lessonInput.maxLength = 300;
+          lessonInput.placeholder = "One lesson for future posts";
+          lessonLabel.appendChild(lessonInput);
+          box.appendChild(lessonLabel);
           function decideThen(status) {
-            review(ev, status);
+            var text = lessonInput.value.trim();
+            if (!text) { review(ev, status); return; }
+            if (text.length < 5) { $("waitingStatus").textContent = "A lesson must be at least 5 characters."; return; }
+            approve.disabled = reject.disabled = true;
+            saveLesson(text, ev.id).then(function (saved) {
+              if (saved.error) { $("waitingStatus").textContent = "Couldn't save the lesson: " + saved.error.message; return; }
+              loadLessons();
+              review(ev, status);
+            }).then(function () { approve.disabled = reject.disabled = false; });
           }
           approve.addEventListener("click", function () { decideThen("published"); });
           reject.addEventListener("click", function () { decideThen("rejected"); });
