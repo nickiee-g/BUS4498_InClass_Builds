@@ -24,7 +24,6 @@
   // The website may read only these columns (the menu), never the raw announcement or moderator notes.
   var PUBLIC_COLUMNS = [
     "id", "created_at", "title", "club", "event_date", "start_time", "end_time", "place_name", "place_detail", "cost", "free_food", "summary",
-    "flyer_url",
   ].join(",");
 
   /* ---------- small helpers ---------- */
@@ -41,6 +40,15 @@
     if (!t) return "";
     var p = t.split(":"), h = +p[0], ap = h >= 12 ? "PM" : "AM";
     return (h % 12 || 12) + ":" + p[1] + " " + ap;
+  }
+  function publicText(value) {
+    return String(value || "")
+      .replace(/\b(?:venmo|cash\s*app|zelle)\s*(?:handle|account)?\s*[:=]?\s*[@$]?[a-z0-9._-]{2,}/gi, "[contact details removed]")
+      .replace(/\b(?:https?:\/\/)?(?:www\.)?(?:venmo\.com|cash\.app|zellepay\.com)\/[a-z0-9._/-]+/gi, "[contact details removed]")
+      .replace(/\B@[a-z0-9._-]{2,}/gi, "[contact details removed]")
+      .replace(/\$[a-z][a-z0-9_]{1,}/gi, "[contact details removed]")
+      .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[contact details removed]")
+      .replace(/\b(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b/g, "[contact details removed]");
   }
   function today() { var t = new Date(); return new Date(t.getFullYear(), t.getMonth(), t.getDate()); }
   function isThisWeek(d) { if (!d) return false; var diff = (parseDate(d) - today()) / 86400000; return diff >= 0 && diff < 7; }
@@ -93,25 +101,18 @@
     var body = el("div", "event-body");
     var time = ev.start_time ? fmtTime(ev.start_time) + (ev.end_time ? " to " + fmtTime(ev.end_time) : "") : "Time to be announced";
     body.appendChild(el("p", "when", fmtDate(ev.event_date) + " · " + time));
-    body.appendChild(el("h3", null, ev.title || "Untitled event"));
+    body.appendChild(el("h3", null, publicText(ev.title) || "Untitled event"));
     var where = [ev.place_name, ev.place_detail].filter(Boolean).join(", ");
-    var meta = [ev.club, where].filter(Boolean).join(" · ");
+    var meta = [publicText(ev.club), publicText(where)].filter(Boolean).join(" · ");
     if (meta) body.appendChild(el("p", "meta", meta));
-    if (ev.summary) body.appendChild(el("p", "summary", ev.summary));
+    if (ev.summary) body.appendChild(el("p", "summary", publicText(ev.summary)));
     var tags = el("p", "tags");
-    if (ev.cost) tags.appendChild(el("span", "tag", ev.cost));
+    if (ev.cost) tags.appendChild(el("span", "tag", publicText(ev.cost)));
     if (ev.free_food) tags.appendChild(el("span", "tag food", "🍕 Free food"));
     if (ev.place_name === "Online") tags.appendChild(el("span", "tag", "💻 Online"));
     if (tags.childNodes.length) body.appendChild(tags);
     if (extra) body.appendChild(extra);
     li.appendChild(body);
-    if (ev.flyer_url && ev.flyer_url.indexOf(baseUrl + "/storage/v1/object/public/flyers/") === 0) {
-      var img = el("img", "flyer");
-      img.src = ev.flyer_url;
-      img.alt = "Flyer for " + (ev.title || "this event");
-      img.loading = "lazy";
-      li.appendChild(img);
-    }
     return li;
   }
 
@@ -244,6 +245,7 @@
       $("modWho").textContent = session.user.email;
       loadWaiting();
       loadLessons();
+      loadPermissions();
     }
   }
   function review(ev, status) {
@@ -308,6 +310,73 @@
         });
         if (!res.data.length) $("lessonsStatus").textContent = "No lessons yet.";
         else $("lessonsStatus").textContent = res.data.length + (res.data.length === 1 ? " lesson" : " lessons");
+      });
+  }
+  function permissionValue(row) {
+    return row.value;
+  }
+  function loadPermissions() {
+    $("permissionsStatus").textContent = "Loading permissions…";
+    db.from("agent_permissions").select("key, label, kind, value, reason, changed_by, updated_at, sort").order("sort")
+      .then(function (res) {
+        var list = $("permissionList");
+        list.textContent = "";
+        if (res.error) { $("permissionsStatus").textContent = "Couldn't load permissions: " + res.error.message; return; }
+        res.data.forEach(function (row) {
+          var item = el("li", "lesson"), info = el("div"), editor = el("div");
+          var current = permissionValue(row);
+          info.appendChild(el("p", "lesson-text", row.label + (row.kind === "switch" ? "" : " · " + current)));
+          info.appendChild(el("p", "lesson-meta", row.reason || "No reason recorded yet."));
+          info.appendChild(el("p", "lesson-meta", row.changed_by ? "Changed by " + row.changed_by + (row.updated_at ? " · " + new Date(row.updated_at).toLocaleString() : "") : "Not changed yet"));
+          item.appendChild(info);
+          var isBuilderLimit = row.key === "max_post_length";
+          if (row.kind === "switch") {
+            var label = el("label", "switch"), input = el("input");
+            input.type = "checkbox"; input.checked = Boolean(current); input.setAttribute("aria-label", row.label);
+            label.appendChild(input); label.appendChild(el("span", "knob")); editor.appendChild(label);
+            if (!isBuilderLimit) input.addEventListener("change", function () { savePermission(row, input.checked, input); });
+            else input.disabled = true;
+          } else if (!isBuilderLimit) {
+            var number = el("input"); number.type = "number"; number.min = "0"; number.step = "1"; number.value = String(current); number.setAttribute("aria-label", row.label); editor.appendChild(number);
+            var save = el("button", "ghost small", "Save number"); save.type = "button"; save.addEventListener("click", function () {
+              if (!number.value || !Number.isInteger(Number(number.value)) || Number(number.value) < 0) { $("permissionsStatus").textContent = "Enter a whole number of 0 or more."; return; }
+              savePermission(row, Number(number.value), save);
+            }); editor.appendChild(save);
+          }
+          if (!isBuilderLimit) {
+            var reason = el("input"); reason.type = "text"; reason.maxLength = 300; reason.placeholder = "Reason for this change (required)"; reason.setAttribute("aria-label", "Reason for changing " + row.label); editor.appendChild(reason);
+            item.appendChild(editor);
+            item._permissionReason = reason;
+          } else {
+            info.appendChild(el("p", "lesson-meta", "Fixed by the builders in code."));
+            item.appendChild(editor);
+          }
+          list.appendChild(item);
+        });
+        $("permissionsStatus").textContent = res.data.length + (res.data.length === 1 ? " permission" : " permissions");
+      });
+  }
+  function savePermission(row, value, control) {
+    var item = control.closest("li"), reasonInput = item && item._permissionReason, reason = reasonInput ? reasonInput.value.trim() : "";
+    if (!reason) {
+      if (row.kind === "switch") control.checked = !control.checked;
+      $("permissionsStatus").textContent = "Type a reason before changing “" + row.label + ".";
+      if (reasonInput) reasonInput.focus();
+      return;
+    }
+    if (row.kind === "number" && (!Number.isInteger(value) || value < 0)) {
+      $("permissionsStatus").textContent = "Enter a whole number of 0 or more."; return;
+    }
+    control.disabled = true;
+    db.from("agent_permissions").update({ value: value, reason: reason, changed_by: session.user.email, updated_at: new Date().toISOString() }).eq("key", row.key)
+      .then(function (res) {
+        control.disabled = false;
+        if (res.error) {
+          if (row.kind === "switch") control.checked = !value;
+          $("permissionsStatus").textContent = "Couldn't save that permission: " + res.error.message; return;
+        }
+        $("permissionsStatus").textContent = row.label + " saved.";
+        loadPermissions();
       });
   }
   $("teachForm").addEventListener("submit", function (e) {
@@ -384,19 +453,6 @@
   $("signOutBtn").addEventListener("click", function () { db.auth.signOut(); });
   db.auth.onAuthStateChange(function (_event, s) { session = s; renderMod(); });
   db.auth.getSession().then(function (res) { session = res.data.session; renderMod(); });
-
-  // Tools: clear the board. Every post goes; the club list and the lessons stay.
-  $("clearBtn").addEventListener("click", function () {
-    if (!window.confirm("Delete every post on the board? This can't be undone. The club list and the lessons stay.")) return;
-    $("toolsMsg").textContent = "Clearing…";
-    db.from("events").delete().not("id", "is", null).then(function (res) {
-      if (res.error) { $("toolsMsg").textContent = "Couldn't clear the board: " + res.error.message; return; }
-      $("toolsMsg").textContent = "The board is empty.";
-      toast("Board cleared");
-      loadWaiting(); loadBoard(true);
-    });
-  });
-
 
   loadBoard(false);
 })();

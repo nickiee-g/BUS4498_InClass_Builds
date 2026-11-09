@@ -8,17 +8,16 @@
 // the club's own earlier posts (memory of what happened, so an update replaces the old card),
 // and lessons moderators have taught it.
 //
-// The AI key lives in Supabase Secrets (ANTHROPIC_API_KEY or OPENAI_API_KEY). It never goes in GitHub.
+// The AI key lives in Supabase Secrets (ANTHROPIC_API_KEY). It never goes in GitHub.
 // Deploy with JWT verification off (verify_jwt = false): the website calls this with the publishable key.
 
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2.117.2";
 import Anthropic from "npm:@anthropic-ai/sdk@0.131.0";
 
 const CLAUDE_MODEL = "claude-haiku-5-5";
-const OPENAI_MODEL = "gpt-6-luna";
-const DAILY_LIMIT = Number(Deno.env.get("DAILY_LIMIT")) || 100; // spending guard: at most this many posts in any 24 hours
-const MAX_TEXT = 2000;
-const DAYS_AHEAD = 60;
+const TEST_CLAUDE_MODEL = "claude-sonnet-5-5";
+const MAX_TEXT = 2000; // builder-owned ceiling; the lower configured value is also enforced
+const ESTABLISHED_CLUBS_CUTOFF = "2026-11-08T00:00:00.000Z";
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
 const PHOTO_TYPES = ["image/jpeg", "image/png"];
 
@@ -86,7 +85,7 @@ type Card = {
 type Photo = { bytes: Uint8Array; type: string };
 
 // What the agent looks up before it decides. Empty until the stage that fills it is built.
-type Club = { name: string; nicknames: string[]; usual_place_code: string; usual_place_detail: string };
+type Club = { name: string; nicknames: string[]; usual_place_code: string; usual_place_detail: string; created_at: string };
 type PastPost = { id: string; title: string; event_date: string | null; start_time: string | null; place_code: string; place_name: string; place_detail: string; status: string };
 type Lesson = { id: string; lesson: string };
 // thread: the sender's earlier chat messages (short-term memory), sent by the chat-channel reader.
@@ -104,6 +103,36 @@ function reply(status: number, body: Record<string, unknown>) {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 }
 
+type Permission = { key: string; label: string; kind: "switch" | "number"; value: unknown; reason: string; changed_by: string; updated_at: string };
+async function loadPermissions(db: SupabaseClient): Promise<Permission[]> {
+  const { data, error } = await db.from("agent_permissions").select("key, label, kind, value, reason, changed_by, updated_at").order("sort");
+  if (error) throw new PostError("The database couldn't read the agent permissions. No post was processed.", 500);
+  const rows = (data ?? []) as Permission[];
+  const required = ["paused", "publish_on_own", "posts_per_day", "days_ahead", "new_club_wait_days", "max_post_length"];
+  const keys = new Set(rows.map((row) => row.key));
+  if (required.some((key) => !keys.has(key))) throw new PostError("The agent permissions table is missing a required setting. No post was processed.", 500);
+  for (const row of rows) {
+    if (row.kind === "switch" && typeof row.value !== "boolean") throw new PostError(`The ${row.label} setting is invalid. No post was processed.`, 500);
+    if (row.kind === "number" && (typeof row.value !== "number" || !Number.isSafeInteger(row.value) || row.value < 0)) throw new PostError(`The ${row.label} setting is invalid. No post was processed.`, 500);
+  }
+  return rows;
+}
+function permission(rows: Permission[], key: string): Permission {
+  return rows.find((row) => row.key === key)!;
+}
+function permissionNumber(rows: Permission[], key: string): number {
+  const value = Number(permission(rows, key).value);
+  if (!Number.isSafeInteger(value) || value < 0) throw new PostError(`The ${permission(rows, key).label} setting must be a whole number of 0 or more.`, 500);
+  return value;
+}
+function switchReadLine(rows: Permission[]): string {
+  const switches = rows.filter((row) => row.kind === "switch");
+  return `Permissions: read switches ${switches.map((row) => `${row.key}=${String(row.value)}`).join(", ")}.`;
+}
+function settingHold(row: Permission, detail: string): string {
+  return `${row.label} (${row.key}) is limiting this post: ${detail}${row.reason ? ` Moderator reason: ${row.reason}` : ""}`;
+}
+
 // The secret key for this project, which Supabase provides inside every Edge Function.
 function serverKey(): string {
   const keys = Deno.env.get("SUPABASE_SECRET_KEYS");
@@ -116,11 +145,7 @@ function serverKey(): string {
   return Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 }
 
-function aiProvider(): "claude" | "openai" | "" {
-  if (Deno.env.get("ANTHROPIC_API_KEY")) return "claude";
-  if (Deno.env.get("OPENAI_API_KEY")) return "openai";
-  return "";
-}
+function aiProvider(): "claude" | "" { return Deno.env.get("ANTHROPIC_API_KEY") ? "claude" : ""; }
 
 function pacificToday(): { iso: string; weekday: string } {
   const now = new Date();
@@ -131,13 +156,14 @@ function pacificToday(): { iso: string; weekday: string } {
 
 /* ---------- knowledge: the club list ---------- */
 async function loadClubs(db: SupabaseClient): Promise<Club[]> {
-  const { data, error } = await db.from("clubs").select("name, nicknames, usual_place_code, usual_place_detail").eq("active", true).order("name");
+  const { data, error } = await db.from("clubs").select("name, nicknames, usual_place_code, usual_place_detail, created_at").eq("active", true).order("name");
   if (error) { console.error("Couldn't read the club list", error); return []; }
   return (data ?? []).map((r) => ({
     name: String(r.name),
     nicknames: String(r.nicknames ?? "").split(",").map((s) => s.trim()).filter(Boolean),
     usual_place_code: String(r.usual_place_code ?? "").toUpperCase(),
     usual_place_detail: String(r.usual_place_detail ?? ""),
+    created_at: String(r.created_at ?? ""),
   }));
 }
 // "The Board Game Guild!" and "board game guild" are the same name.
@@ -193,6 +219,17 @@ function lessonsPrompt(lessons: Lesson[]): string {
 const UPDATE_CUES = /\b(update|updated|moved|move[sd]? to|change[ds]?|correction|corrected|reschedul\w*|postponed|instead|now at|new (time|date|place|location|room)|cancel\w*)\b/i;
 function looksLikeUpdate(text: string): boolean { return UPDATE_CUES.test(text); }
 
+// R6 is also enforced here, so a model response cannot expose personal contact details on the public board.
+function redactPublicText(value: string): string {
+  return value
+    .replace(/\b(?:venmo|cash\s*app|zelle)\s*(?:handle|account)?\s*[:=]?\s*[@$]?[a-z0-9._-]{2,}/gi, "[contact details removed]")
+    .replace(/\b(?:https?:\/\/)?(?:www\.)?(?:venmo\.com|cash\.app|zellepay\.com)\/[a-z0-9._/-]+/gi, "[contact details removed]")
+    .replace(/\B@[a-z0-9._-]{2,}/gi, "[contact details removed]")
+    .replace(/\$[a-z][a-z0-9_]{1,}/gi, "[contact details removed]")
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[contact details removed]")
+    .replace(/\b(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b/g, "[contact details removed]");
+}
+
 
 function systemPrompt(ctx: Ctx): string {
   const today = pacificToday();
@@ -230,7 +267,8 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(s);
 }
 
-async function askClaude(announcement: string, photo: Photo | null, ctx: Ctx): Promise<Card> {
+type AiResult = { card: Card; input_tokens: number; output_tokens: number };
+async function askClaude(announcement: string, photo: Photo | null, ctx: Ctx, model: string): Promise<AiResult> {
   const client = new Anthropic({ apiKey: Deno.env.get("ANTHROPIC_API_KEY") });
   // deno-lint-ignore no-explicit-any
   const content: any[] = [];
@@ -239,7 +277,7 @@ async function askClaude(announcement: string, photo: Photo | null, ctx: Ctx): P
   let msg;
   try {
     msg = await client.messages.create({
-      model: CLAUDE_MODEL,
+      model,
       max_tokens: 4000,
       system: systemPrompt(ctx),
       messages: [{ role: "user", content }],
@@ -254,32 +292,7 @@ async function askClaude(announcement: string, photo: Photo | null, ctx: Ctx): P
   if (msg.stop_reason === "refusal") throw new PostError("The AI declined to read this post.", 422);
   const block = msg.content.find((b) => b.type === "text");
   if (!block || block.type !== "text") throw new PostError("The AI sent back an empty answer. Try again.", 502);
-  return JSON.parse(block.text) as Card;
-}
-
-async function askOpenAI(announcement: string, photo: Photo | null, ctx: Ctx): Promise<Card> {
-  // deno-lint-ignore no-explicit-any
-  const content: any[] = [];
-  if (photo) content.push({ type: "input_image", image_url: `data:${photo.type};base64,${toBase64(photo.bytes)}` });
-  content.push({ type: "input_text", text: userText(announcement, Boolean(photo), ctx) });
-  const res = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${Deno.env.get("OPENAI_API_KEY")}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: OPENAI_MODEL,
-      instructions: systemPrompt(ctx),
-      input: [{ role: "user", content }],
-      text: { format: { type: "json_schema", name: "event_card", schema: CARD_SCHEMA, strict: true } },
-    }),
-  });
-  if (res.status === 401) throw new PostError("The AI key in Supabase Secrets was rejected. Check OPENAI_API_KEY.", 502);
-  if (res.status === 429) throw new PostError("The AI is busy, or the key's spending limit was reached. Try again in a minute.", 503);
-  if (!res.ok) throw new PostError(`The AI service returned an error (${res.status}).`, 502);
-  const data = await res.json();
-  // deno-lint-ignore no-explicit-any
-  const text = (data.output ?? []).flatMap((o: any) => o.content ?? []).find((c: any) => c.type === "output_text")?.text;
-  if (!text) throw new PostError("The AI sent back an empty answer. Try again.", 502);
-  return JSON.parse(text) as Card;
+  return { card: JSON.parse(block.text) as Card, input_tokens: msg.usage.input_tokens, output_tokens: msg.usage.output_tokens };
 }
 
 function validDate(s: string): string | null {
@@ -297,7 +310,7 @@ function daysFromToday(isoDate: string): number {
 
 // The code, not the AI, decides whether a post is published. The AI reads and judges; the rules decide.
 // `extra` holds reasons from what the agent looked up (the club list, the lessons). They can only add holds.
-function decide(card: Card, hasPhoto: boolean, extra: string[] = [], forceWait = false): { status: string; reasons: string[] } {
+function decide(card: Card, hasPhoto: boolean, daysAhead: number, extra: string[] = [], forceWait = false): { status: string; reasons: string[] } {
   if (!card.is_event && !forceWait) return { status: "rejected", reasons: [card.not_event_reason || "This doesn't look like an event (rule R1)."] };
   const reasons: string[] = [];
   if (!card.is_event && forceWait) reasons.push(card.not_event_reason || "A moderator should review this post.");
@@ -311,7 +324,7 @@ function decide(card: Card, hasPhoto: boolean, extra: string[] = [], forceWait =
   if (date) {
     const days = daysFromToday(date);
     if (days < 0) reasons.push("The date has already passed (rule R8).");
-    else if (days > DAYS_AHEAD) reasons.push(`The date is more than ${DAYS_AHEAD} days away (rule R8).`);
+    else if (days > daysAhead) reasons.push(`The date is more than ${daysAhead} days away (rule R8).`);
   }
   card.rule_flags.forEach((f) => reasons.push(f));
   extra.forEach((r) => reasons.push(r));
@@ -328,23 +341,36 @@ const MESSAGES: Record<string, string> = {
 };
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+  const started = performance.now();
+  let usageModel: string | null = null, inputTokens = 0, outputTokens = 0;
+  let dryRun = false;
+  const respond = (status: number, body: Record<string, unknown>) => reply(status, {
+    ...body,
+    ...(dryRun ? { dry_run: true } : {}),
+    ms: Math.max(0, Math.round(performance.now() - started)),
+    usage: { model: usageModel, input_tokens: inputTokens, output_tokens: outputTokens },
+  });
+  if (req.method === "OPTIONS") return respond(200, { ok: true });
   const db = createClient(Deno.env.get("SUPABASE_URL")!, serverKey(), { auth: { persistSession: false } });
 
   // A quick check that the agent is running, without calling the AI.
   if (req.method === "GET") {
     const ai = aiProvider();
+    usageModel = ai ? CLAUDE_MODEL : null;
     const status: Record<string, unknown> = {
       ok: true,
       ready: Boolean(ai),
-      ai: ai === "claude" ? `Claude (${CLAUDE_MODEL})` : ai === "openai" ? `OpenAI (${OPENAI_MODEL})` : "",
-      message: ai ? "The agent is running and has an AI key." : "The agent is running, but no AI key was found. Add ANTHROPIC_API_KEY or OPENAI_API_KEY in Edge Functions → Secrets.",
+      ai: ai === "claude" ? `Claude (${CLAUDE_MODEL})` : "",
+      message: ai ? "The agent is running and has an AI key." : "The agent is running, but no AI key was found. Add ANTHROPIC_API_KEY in Edge Functions → Secrets.",
     };
     status.clubs = (await db.from("clubs").select("id", { count: "exact", head: true }).eq("active", true)).count ?? 0;
     status.lessons = (await db.from("lessons").select("id", { count: "exact", head: true }).eq("active", true)).count ?? 0;
-    return reply(200, status);
+    const perms = await db.from("agent_permissions").select("key, kind, value", { count: "exact" }).order("sort");
+    status.permissions = perms.count ?? 0;
+    status.switches = Object.fromEntries((perms.data ?? []).filter((row) => row.kind === "switch").map((row) => [row.key, row.value]));
+    return respond(200, status);
   }
-  if (req.method !== "POST") return reply(405, { ok: false, message: "Send a POST request." });
+  if (req.method !== "POST") return respond(405, { ok: false, message: "Send a POST request." });
 
   try {
     // Read the post: a form (from the website) or JSON.
@@ -353,6 +379,7 @@ Deno.serve(async (req) => {
     let source = "";
     let sourceId = "";
     let sourceName = "";
+    let requestedModel = "";
     let thread: string[] = [];
     const type = req.headers.get("content-type") ?? "";
     if (type.includes("application/json")) {
@@ -361,11 +388,15 @@ Deno.serve(async (req) => {
       source = String(body.source ?? "").trim().slice(0, 40);
       sourceId = String(body.source_id ?? "").trim().slice(0, 200);
       sourceName = String(body.source_name ?? "").trim().slice(0, 120);
+      dryRun = body.dry_run === true;
+      requestedModel = String(body.model ?? "").trim();
       const rawThread = Array.isArray(body.thread) ? body.thread : typeof body.thread === "string" ? [body.thread] : [];
       thread = rawThread.slice(-4).map((item: unknown) => String(item).slice(0, 500));
     } else {
       const form = await req.formData();
       announcement = String(form.get("announcement") ?? "");
+      dryRun = String(form.get("dry_run") ?? "").toLowerCase() === "true";
+      requestedModel = String(form.get("model") ?? "").trim();
       const file = form.get("flyer");
       if (file instanceof File && file.size > 0) {
         if (!PHOTO_TYPES.includes(file.type)) throw new PostError("The photo must be a JPG or PNG.");
@@ -374,8 +405,18 @@ Deno.serve(async (req) => {
       }
     }
     announcement = announcement.trim();
+
+    // Load every setting before checking duplicates or contacting an AI. A paused agent stops here.
+    const permissions = await loadPermissions(db);
+    const switchNote = switchReadLine(permissions);
+    if (permission(permissions, "paused").value === true) {
+      return respond(200, { ok: true, status: "paused", message: "The agent is paused. No AI was called and nothing was changed.", reasons: [], looked_at: [switchNote], dry_run: dryRun });
+    }
     if (!announcement) throw new PostError("Paste the announcement text first.");
-    if (announcement.length > MAX_TEXT) throw new PostError(`Keep the announcement under ${MAX_TEXT} characters.`);
+    if (requestedModel && !dryRun) throw new PostError("A model may be selected only in test mode (dry_run: true).");
+    if (requestedModel && ![CLAUDE_MODEL, TEST_CLAUDE_MODEL].includes(requestedModel)) throw new PostError("Test mode supports only claude-haiku-5-5 and claude-sonnet-5-5.");
+    const maxText = Math.min(MAX_TEXT, permissionNumber(permissions, "max_post_length"));
+    if (announcement.length > maxText) throw new PostError(`Keep the announcement under ${maxText} characters.`);
 
     // A chat message can receive only one decision, even if the reader retries it.
     if (source && sourceId) {
@@ -384,7 +425,7 @@ Deno.serve(async (req) => {
         .eq("source", source).eq("source_id", sourceId).maybeSingle();
       if (readError) throw new PostError("The database couldn't check whether this chat message was already read.", 500);
       if (alreadyRead) {
-        return reply(200, {
+        return respond(200, {
           ok: true, status: "duplicate", already_read: true,
           message: "This chat message was already read.",
           reasons: ["A decision for this chat message is already in the database."],
@@ -394,18 +435,19 @@ Deno.serve(async (req) => {
     }
 
     const ai = aiProvider();
-    if (!ai) throw new PostError("No AI key yet. Add ANTHROPIC_API_KEY or OPENAI_API_KEY in Edge Functions → Secrets.", 503);
+    if (!ai) throw new PostError("No Claude AI key yet. Add ANTHROPIC_API_KEY in Edge Functions → Secrets.", 503);
 
     // Spending guard.
+    const dailyLimit = permissionNumber(permissions, "posts_per_day");
     const since = new Date(Date.now() - 86400000).toISOString();
     const { count } = await db.from("events").select("id", { count: "exact", head: true }).gte("created_at", since);
-    if ((count ?? 0) >= DAILY_LIMIT) throw new PostError("The website has reached today's posting limit. Try again tomorrow.", 429);
+    if ((count ?? 0) >= dailyLimit) throw new PostError(settingHold(permission(permissions, "posts_per_day"), `the ${dailyLimit}-post limit for the last 24 hours has been reached; try again tomorrow.`), 429);
 
 
     // What the agent looks up before it reads the post. Each run starts with a blank desk: the model
     // remembers nothing on its own. Everything below is memory the code builds for it.
     const ctx: Ctx = { clubs: [], history: [], lessons: [], thread };
-    const notes: string[] = [];   // what the agent looked at, saved with the post and shown to the moderator
+    const notes: string[] = [switchNote];   // what the agent looked at, saved with the post and shown to the moderator
     const extra: string[] = [];   // reasons added by knowledge, memory, and lessons (they can only add holds)
     // A follow-up ("actually, 8 pm") names no club itself, so the sender's earlier messages count too.
     ctx.clubs = await loadClubs(db);
@@ -416,7 +458,12 @@ Deno.serve(async (req) => {
     if (preClub) ctx.history = await loadHistory(db, preClub.name);
 
     // The AI reads the post and fills in the card.
-    const card = ai === "claude" ? await askClaude(announcement, photo, ctx) : await askOpenAI(announcement, photo, ctx);
+    const runModel = requestedModel || CLAUDE_MODEL;
+    usageModel = runModel;
+    const aiResult = await askClaude(announcement, photo, ctx, runModel);
+    inputTokens = aiResult.input_tokens;
+    outputTokens = aiResult.output_tokens;
+    const card = aiResult.card;
     card.place_code = card.place_code.trim().toUpperCase();
 
     const appliedNumbers = [...new Set((Array.isArray(card.lessons_applied) ? card.lessons_applied : [])
@@ -447,6 +494,16 @@ Deno.serve(async (req) => {
       extra.push(card.club ? `“${card.club}” isn't on the club list yet. A moderator can add it in the clubs table.` : "The post doesn't say which club is hosting, and only listed clubs can post.");
     }
 
+    const newClubWait = permission(permissions, "new_club_wait_days");
+    if (club && club.created_at && Date.parse(club.created_at) > Date.parse(ESTABLISHED_CLUBS_CUTOFF)) {
+      const clubAgeDays = Math.floor((Date.now() - Date.parse(club.created_at)) / 86400000);
+      const waitDays = permissionNumber(permissions, "new_club_wait_days");
+      if (clubAgeDays < waitDays) {
+        const remaining = Math.max(0, waitDays - Math.max(0, clubAgeDays));
+        extra.push(settingHold(newClubWait, `${club.name} was added ${Math.max(0, clubAgeDays)} day${clubAgeDays === 1 ? "" : "s"} ago and must wait ${remaining} more day${remaining === 1 ? "" : "s"}.`));
+      }
+    }
+
     // Memory: the club's own upcoming posts. An update replaces the earlier card instead of adding a second one.
     // The AI says which earlier post this updates; the code accepts that only when the post is for the same day
     // or says it's a change, so a club's next regular meeting is never mistaken for an update of the last one.
@@ -474,7 +531,20 @@ Deno.serve(async (req) => {
     }
 
 
-    const { status, reasons } = decide(card, Boolean(photo), extra, instructionAttempt);
+    const daysAhead = permissionNumber(permissions, "days_ahead");
+    const { status: ruleStatus, reasons } = decide(card, Boolean(photo), daysAhead, extra, instructionAttempt);
+    let status = ruleStatus;
+    const daysAheadSetting = permission(permissions, "days_ahead");
+    if (validDate(card.event_date) && daysFromToday(validDate(card.event_date)!) > daysAhead) {
+      reasons.push(settingHold(daysAheadSetting, `the event is beyond the ${daysAhead}-day window.`));
+      status = "waiting";
+    }
+    const ownPublish = permission(permissions, "publish_on_own");
+    if (status === "published" && ownPublish.value !== true) {
+      reasons.push(settingHold(ownPublish, "automatic publishing is turned off; a moderator must review every post."));
+      status = "waiting";
+    }
+    if (status === "waiting") reasons.splice(0, reasons.length, ...new Set(reasons));
 
     const eventDate = validDate(card.event_date);
     const startTime = validTime(card.start_time);
@@ -483,22 +553,22 @@ Deno.serve(async (req) => {
       announcement,
       status,
       status_reason: reasons.join(" "),
-      title: card.title.slice(0, 120),
-      club: card.club.slice(0, 120),
+      title: redactPublicText(card.title).slice(0, 120),
+      club: redactPublicText(card.club).slice(0, 120),
       event_date: eventDate,
       start_time: startTime,
       end_time: validTime(card.end_time),
       place_code: placeCode,
       place_name: PLACES[placeCode] ?? (placeCode === "OFF_CAMPUS" ? "Off campus" : ""),
-      place_detail: card.place_detail.slice(0, 120),
-      cost: card.cost.slice(0, 40),
+      place_detail: redactPublicText(card.place_detail).slice(0, 120),
+      cost: redactPublicText(card.cost).slice(0, 40),
       free_food: card.free_food,
-      summary: card.summary.slice(0, 400),
+      summary: redactPublicText(card.summary).slice(0, 400),
       rule_flags: card.rule_flags,
       note_for_moderator: card.note_for_moderator,
       // One live post per date + start time + place. The database enforces it with a unique index.
       dedupe_key: status !== "rejected" && eventDate && startTime && placeCode ? `${eventDate}|${startTime}|${placeCode}` : null,
-      ai_model: ai === "claude" ? CLAUDE_MODEL : OPENAI_MODEL,
+      ai_model: runModel,
       agent_notes: notes,
       lessons_used: followedLessons.map((lesson) => lesson.lesson),
       // A waiting update remembers which post it replaces, so approving it retires the old one.
@@ -507,6 +577,20 @@ Deno.serve(async (req) => {
       source_id: sourceId,
       source_name: sourceName,
     };
+
+    if (dryRun) {
+      let finalStatus = status, finalReasons = reasons;
+      if (row.dedupe_key) {
+        const { data: existing } = await db.from("events").select("id, title, club, event_date, start_time, place_name, status, created_at")
+          .eq("dedupe_key", row.dedupe_key).in("status", ["published", "waiting"]).maybeSingle();
+        if (existing) { finalStatus = "duplicate"; finalReasons = ["Same date, start time, and place as a post already in the database."]; }
+      }
+      return respond(200, {
+        ok: true, status: finalStatus, message: finalStatus === "duplicate" ? MESSAGES.duplicate : MESSAGES[status],
+        reasons: finalReasons, event: row, looked_at: notes, lessons_used: followedLessons.map((lesson) => lesson.lesson),
+        replaced: null, dry_run: true,
+      });
+    }
 
     // An update that keeps the same date, time, and place (a new room, a new title, a new cost) would collide
     // with its own earlier post, so it edits that post in place instead of adding a row.
@@ -534,7 +618,7 @@ Deno.serve(async (req) => {
         .update(editedFields)
         .eq("id", old.id).select().single();
       if (!editError) {
-        return reply(200, {
+        return respond(200, {
           ok: true, status, message: `${MESSAGES[status]} The club's earlier post, “${old.title}”, was updated in place.`, reasons, event: edited, looked_at: notes, lessons_used: followedLessons.map((lesson) => lesson.lesson), replaced: null, edited: true,
         });
       }
@@ -549,7 +633,7 @@ Deno.serve(async (req) => {
             .select("id, title, club, event_date, start_time, place_name, status, created_at")
             .eq("source", source).eq("source_id", sourceId).maybeSingle();
           if (alreadyRead) {
-            return reply(200, {
+            return respond(200, {
               ok: true, status: "duplicate", already_read: true,
               message: "This chat message was already read.",
               reasons: ["A decision for this chat message is already in the database."],
@@ -560,7 +644,7 @@ Deno.serve(async (req) => {
         const { data: existing } = await db.from("events")
           .select("title, club, event_date, start_time, place_name, status, created_at")
           .eq("dedupe_key", row.dedupe_key).in("status", ["published", "waiting"]).maybeSingle();
-        return reply(200, {
+        return respond(200, {
           ok: true,
           status: "duplicate",
           message: MESSAGES.duplicate,
@@ -597,7 +681,7 @@ Deno.serve(async (req) => {
       message = `${MESSAGES.published} It replaces the club's earlier post, “${old.title}”.`;
     }
 
-    return reply(200, {
+    return respond(200, {
       ok: true,
       status,
       message,
@@ -608,8 +692,8 @@ Deno.serve(async (req) => {
       replaced,
     });
   } catch (err) {
-    if (err instanceof PostError) return reply(err.status, { ok: false, message: err.message });
+    if (err instanceof PostError) return respond(err.status, { ok: false, message: err.message });
     console.error(err);
-    return reply(500, { ok: false, message: "Something went wrong in the agent. Check the function logs in Supabase." });
+    return respond(500, { ok: false, message: "Something went wrong in the agent. Check the function logs in Supabase." });
   }
 });
