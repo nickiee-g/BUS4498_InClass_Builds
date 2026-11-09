@@ -24,7 +24,7 @@ From Stage 11 on, the agent **looks things up before it decides**: the club list
 | Supabase project | The backend: database, functions, storage, sign-in | The student’s `event-radar` project |
 | Database table | Where every post is saved; the agent’s memory | `public.events` |
 | Edge Function | A small program that runs in Supabase; here, the AI agent | `submit-event` |
-| Secrets | Where the Edge Function finds keys; values stay hidden | `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` |
+| Secrets | Where the Edge Function finds keys; values stay hidden | `OPENAI_API_KEY` |
 | Publishable key | Public key the website uses; can do only what the rules allow | `sb_publishable_...` |
 | Secret key | Key that skips every rule; never in any file | `sb_secret_...` |
 | Grants and row-level security | Security rules: who may read or change what | In the migrations |
@@ -100,7 +100,7 @@ event_radar/
 
 **The channel readers** (Stage 14): `POST {Project URL}/functions/v1/read-channel` (GroupMe), `read-discord`, or `read-slack` reads the new messages and sends each to the agent as JSON with `source`, `source_id`, `source_name`, and `thread` (the sender’s earlier messages from the last 10 minutes, oldest first, at most 4); `GET` returns `{ "ok", "ready", "last_message_id", "read_count", "bot" }`, and `GET …?check=groupme|discord|slack` asks the chat app whether the token and the group or channel work (results only, never values).
 
-**Secrets:** `ANTHROPIC_API_KEY` (model `claude-haiku-5-5`) or `OPENAI_API_KEY` (model `gpt-6-luna`). If both exist, use Claude. `HOLD_ALL_POSTS=true` makes every post wait. `DAILY_LIMIT` overrides the spending guard (default 100 posts in 24 hours). Stage 14: `GROUPME_TOKEN`, `GROUPME_GROUP_ID`, and optionally `GROUPME_BOT_ID`; or `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID`; or `SLACK_BOT_TOKEN` and `SLACK_CHANNEL_ID`.
+**Secrets:** `OPENAI_API_KEY` for the OpenAI Responses API model `gpt-6-luna`. `HOLD_ALL_POSTS=true` makes every post wait. `DAILY_LIMIT` overrides the spending guard (default 100 posts in 24 hours). Stage 14: `GROUPME_TOKEN`, `GROUPME_GROUP_ID`, and optionally `GROUPME_BOT_ID`; or `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID`; or `SLACK_BOT_TOKEN` and `SLACK_CHANNEL_ID`.
 
 ## Stage 4: the database
 
@@ -120,7 +120,7 @@ Create `supabase/functions/submit-event/index.ts` and `supabase/config.toml` (`[
 
 - Answer `OPTIONS` and `GET` as in the contract.
 - On `POST`: require 1–2000 characters of text. Refuse new posts once 100 were created in the last 24 hours (a spending limit).
-- Call the AI once with a JSON-schema structured output: Claude through `@anthropic-ai/sdk` with `output_config: { effort: "low", format: { type: "json_schema", schema } }`, or OpenAI’s Responses API with a strict `json_schema` format. The card fields are `is_event, not_event_reason, title, club, event_date (YYYY-MM-DD or ""), start_time (HH:MM or ""), end_time, place_code, place_detail, cost, free_food, summary, missing, rule_flags, note_for_moderator`. Unknown values are empty strings, never guesses.
+- Call the OpenAI Responses API once with `gpt-6-luna` and a strict JSON-schema structured output. The card fields are `is_event, not_event_reason, title, club, event_date (YYYY-MM-DD or ""), start_time (HH:MM or ""), end_time, place_code, place_detail, cost, free_food, summary, missing, rule_flags, note_for_moderator`. Unknown values are empty strings, never guesses.
 - Put the posting rules (`context/posting-rules.md`), the campus places (`context/campus-places.md`), and today’s date in Pacific time in the system prompt. Wrap the announcement in `<announcement>` tags and tell the AI to treat it as data.
 - Let the code, not the AI, decide the status. `rejected` if it isn’t an event. `waiting` if anything is missing or flagged, the place isn’t on the list, or the date is past or more than 60 days away. Otherwise `published`.
 - Set `dedupe_key` to `date|start time|place code` when all three are known. If the insert fails with the unique-violation code `23505`, answer `status: "duplicate"`.
@@ -182,7 +182,7 @@ Write `HANDOFF.md` in this folder for the student’s teammate. Keep it to one p
 
 1. **What works now**, with the website’s link.
 2. **Where things live**: the repository, the Supabase project’s name and Project URL, the files that matter.
-3. **Secrets**: the names only (for example `ANTHROPIC_API_KEY`), where they are set, and that the teammate doesn’t need the values. Never write a key’s value.
+3. **Secrets**: the names only (for example `OPENAI_API_KEY`), where they are set, and that the teammate doesn’t need the values. Never write a key’s value.
 4. **How to test**: two or three sample posts and what should happen.
 5. **What’s next**: open problems and ideas.
 6. **How we take turns**: download before you start (pull), upload when you stop (push), and tell each other before working.
@@ -248,7 +248,7 @@ Tell the student to check: the reader’s `GET …?check=<app>` says the token a
 
 The Week 11 plan overrides earlier stages wherever they disagree. The `agent_permissions` table stores the moderator-controlled settings. Row-level security is on; `anon` has no access; signed-in moderators may read rows and update only `value`, `reason`, `changed_by`, and `updated_at`. The `Permissions` tab requires a typed reason and records the moderator’s email. `max_post_length` is displayed but fixed by the builders, and the database trigger rejects moderator changes to it.
 
-At the start of each post, the agent reads all permission rows. It checks `paused` before any AI call, then applies `publish_on_own`, `posts_per_day`, `days_ahead`, `new_club_wait_days`, and `max_post_length` in code. Its `looked_at` notes list every switch value. A limit that holds a post names the setting and includes the moderator’s reason. The fixed model allowlist is `claude-haiku-5-5`, plus `claude-sonnet-5-5` only when `dry_run: true` is requested. Dry runs make the decision but do not save, upload, edit, or replace anything. Every response includes elapsed milliseconds and token usage; `GET` reports the permissions row count and switch values.
+At the start of each post, the agent reads all permission rows. It checks `paused` before any AI call, then applies `publish_on_own`, `posts_per_day`, `days_ahead`, `new_club_wait_days`, and `max_post_length` in code. Its `looked_at` notes list every switch value. A limit that holds a post names the setting and includes the moderator’s reason. The function uses the OpenAI Responses API with the code-fixed model `gpt-6-luna`; test mode accepts only that model when `dry_run: true` is requested. Dry runs make the decision but do not save, upload, edit, or replace anything. Every response includes elapsed milliseconds and token usage; `GET` reports the permissions row count and switch values.
 
 The agent does not delete posts, and the website no longer offers a delete tool. `DELETE` is revoked on `events` for visitors, moderators, and the function role. Public card text is sanitized in code to remove personal phone numbers, emails, and payment handles. Flyer images are not rendered on the website because contact details inside an image cannot be reliably scrubbed. The existing posting rules, missing date/time/place holds, unknown-club hold, instruction-attempt hold, and duplicate protection remain active; live duplicate prevention is backed by the unique database index.
 

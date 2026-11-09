@@ -8,14 +8,12 @@
 // the club's own earlier posts (memory of what happened, so an update replaces the old card),
 // and lessons moderators have taught it.
 //
-// The AI key lives in Supabase Secrets (ANTHROPIC_API_KEY). It never goes in GitHub.
+// The OpenAI key lives in Supabase Secrets (OPENAI_API_KEY). It never goes in GitHub.
 // Deploy with JWT verification off (verify_jwt = false): the website calls this with the publishable key.
 
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2.117.2";
-import Anthropic from "npm:@anthropic-ai/sdk@0.131.0";
 
-const CLAUDE_MODEL = "claude-haiku-5-5";
-const TEST_CLAUDE_MODEL = "claude-sonnet-5-5";
+const OPENAI_MODEL = "gpt-6-luna";
 const MAX_TEXT = 2000; // builder-owned ceiling; the lower configured value is also enforced
 const ESTABLISHED_CLUBS_CUTOFF = "2026-11-08T00:00:00.000Z";
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
@@ -145,7 +143,7 @@ function serverKey(): string {
   return Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 }
 
-function aiProvider(): "claude" | "" { return Deno.env.get("ANTHROPIC_API_KEY") ? "claude" : ""; }
+function aiProvider(): "openai" | "" { return Deno.env.get("OPENAI_API_KEY") ? "openai" : ""; }
 
 function pacificToday(): { iso: string; weekday: string } {
   const now = new Date();
@@ -268,31 +266,34 @@ function toBase64(bytes: Uint8Array): string {
 }
 
 type AiResult = { card: Card; input_tokens: number; output_tokens: number };
-async function askClaude(announcement: string, photo: Photo | null, ctx: Ctx, model: string): Promise<AiResult> {
-  const client = new Anthropic({ apiKey: Deno.env.get("ANTHROPIC_API_KEY") });
+async function askOpenAI(announcement: string, photo: Photo | null, ctx: Ctx, model: string): Promise<AiResult> {
   // deno-lint-ignore no-explicit-any
   const content: any[] = [];
-  if (photo) content.push({ type: "image", source: { type: "base64", media_type: photo.type, data: toBase64(photo.bytes) } });
-  content.push({ type: "text", text: userText(announcement, Boolean(photo), ctx) });
-  let msg;
-  try {
-    msg = await client.messages.create({
+  if (photo) content.push({ type: "input_image", image_url: `data:${photo.type};base64,${toBase64(photo.bytes)}` });
+  content.push({ type: "input_text", text: userText(announcement, Boolean(photo), ctx) });
+  const res = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${Deno.env.get("OPENAI_API_KEY")}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
       model,
-      max_tokens: 4000,
-      system: systemPrompt(ctx),
-      messages: [{ role: "user", content }],
-      output_config: { effort: "low", format: { type: "json_schema", schema: CARD_SCHEMA } },
-    });
-  } catch (err) {
-    if (err instanceof Anthropic.AuthenticationError) throw new PostError("The AI key in Supabase Secrets was rejected. Check ANTHROPIC_API_KEY.", 502);
-    if (err instanceof Anthropic.RateLimitError) throw new PostError("The AI is busy, or the key's spending limit was reached. Try again in a minute.", 503);
-    if (err instanceof Anthropic.APIError) throw new PostError(`The AI service returned an error (${err.status}).`, 502);
-    throw err;
-  }
-  if (msg.stop_reason === "refusal") throw new PostError("The AI declined to read this post.", 422);
-  const block = msg.content.find((b) => b.type === "text");
-  if (!block || block.type !== "text") throw new PostError("The AI sent back an empty answer. Try again.", 502);
-  return { card: JSON.parse(block.text) as Card, input_tokens: msg.usage.input_tokens, output_tokens: msg.usage.output_tokens };
+      instructions: systemPrompt(ctx),
+      input: [{ role: "user", content }],
+      reasoning: { effort: "low" },
+      max_output_tokens: 4000,
+      store: false,
+      text: { format: { type: "json_schema", name: "event_card", strict: true, schema: CARD_SCHEMA } },
+    }),
+  });
+  if (res.status === 401) throw new PostError("The OpenAI key in Supabase Secrets was rejected. Check OPENAI_API_KEY.", 502);
+  if (res.status === 429) throw new PostError("OpenAI is busy, or the API project's spending or rate limit was reached. Try again in a minute.", 503);
+  if (!res.ok) throw new PostError(`OpenAI returned an error (${res.status}). Check that the API key and model are enabled for this API project.`, 502);
+  const data = await res.json();
+  // deno-lint-ignore no-explicit-any
+  const blocks = (data.output ?? []).flatMap((item: any) => item.content ?? []);
+  if (blocks.some((block: any) => block.type === "refusal")) throw new PostError("The AI declined to read this post.", 422);
+  const text = blocks.find((block: any) => block.type === "output_text")?.text;
+  if (!text) throw new PostError("OpenAI returned an empty answer. Try again.", 502);
+  return { card: JSON.parse(text) as Card, input_tokens: data.usage?.input_tokens ?? 0, output_tokens: data.usage?.output_tokens ?? 0 };
 }
 
 function validDate(s: string): string | null {
@@ -356,12 +357,12 @@ Deno.serve(async (req) => {
   // A quick check that the agent is running, without calling the AI.
   if (req.method === "GET") {
     const ai = aiProvider();
-    usageModel = ai ? CLAUDE_MODEL : null;
+    usageModel = ai ? OPENAI_MODEL : null;
     const status: Record<string, unknown> = {
       ok: true,
       ready: Boolean(ai),
-      ai: ai === "claude" ? `Claude (${CLAUDE_MODEL})` : "",
-      message: ai ? "The agent is running and has an AI key." : "The agent is running, but no AI key was found. Add ANTHROPIC_API_KEY in Edge Functions → Secrets.",
+      ai: ai === "openai" ? `OpenAI (${OPENAI_MODEL})` : "",
+      message: ai ? "The agent is running and has an OpenAI API key." : "The agent is running, but no API key was found. Add OPENAI_API_KEY in Edge Functions → Secrets.",
     };
     status.clubs = (await db.from("clubs").select("id", { count: "exact", head: true }).eq("active", true)).count ?? 0;
     status.lessons = (await db.from("lessons").select("id", { count: "exact", head: true }).eq("active", true)).count ?? 0;
@@ -414,7 +415,7 @@ Deno.serve(async (req) => {
     }
     if (!announcement) throw new PostError("Paste the announcement text first.");
     if (requestedModel && !dryRun) throw new PostError("A model may be selected only in test mode (dry_run: true).");
-    if (requestedModel && ![CLAUDE_MODEL, TEST_CLAUDE_MODEL].includes(requestedModel)) throw new PostError("Test mode supports only claude-haiku-5-5 and claude-sonnet-5-5.");
+    if (requestedModel && requestedModel !== OPENAI_MODEL) throw new PostError(`Test mode supports only ${OPENAI_MODEL}.`);
     const maxText = Math.min(MAX_TEXT, permissionNumber(permissions, "max_post_length"));
     if (announcement.length > maxText) throw new PostError(`Keep the announcement under ${maxText} characters.`);
 
@@ -435,7 +436,7 @@ Deno.serve(async (req) => {
     }
 
     const ai = aiProvider();
-    if (!ai) throw new PostError("No Claude AI key yet. Add ANTHROPIC_API_KEY in Edge Functions → Secrets.", 503);
+    if (!ai) throw new PostError("No OpenAI API key yet. Add OPENAI_API_KEY in Edge Functions → Secrets.", 503);
 
     // Spending guard.
     const dailyLimit = permissionNumber(permissions, "posts_per_day");
@@ -458,9 +459,9 @@ Deno.serve(async (req) => {
     if (preClub) ctx.history = await loadHistory(db, preClub.name);
 
     // The AI reads the post and fills in the card.
-    const runModel = requestedModel || CLAUDE_MODEL;
+    const runModel = requestedModel || OPENAI_MODEL;
     usageModel = runModel;
-    const aiResult = await askClaude(announcement, photo, ctx, runModel);
+    const aiResult = await askOpenAI(announcement, photo, ctx, runModel);
     inputTokens = aiResult.input_tokens;
     outputTokens = aiResult.output_tokens;
     const card = aiResult.card;

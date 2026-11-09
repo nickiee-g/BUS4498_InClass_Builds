@@ -14,7 +14,7 @@ The [Club Event Radar website](https://nickiee-g.github.io/BUS4498_InClass_Build
 
 ## Secrets
 
-The agent uses `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, stored in Supabase → **Edge Functions → Secrets**. If both exist, it uses Anthropic. `HOLD_ALL_POSTS` is an optional setting that holds every post for the instructor. Nicole does not need the secret values; don’t copy them into GitHub or this document. `config.js` holds the public Project URL and publishable key only.
+The agent uses `OPENAI_API_KEY`, stored in Supabase → **Edge Functions → Secrets**. It calls the OpenAI Responses API using `gpt-6-luna`. `HOLD_ALL_POSTS` is an optional setting that holds every post for the instructor. Nicole does not need the secret value; don’t copy it into GitHub or this document. `config.js` holds the public Project URL and publishable key only.
 
 ## How to test
 
