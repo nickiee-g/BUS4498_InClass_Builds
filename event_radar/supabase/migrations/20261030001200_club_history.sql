@@ -14,8 +14,6 @@ alter table public.events add column if not exists updates_id uuid;
 
 -- Moderators may also mark a post as replaced (when they approve an update).
 drop policy if exists "Moderators can approve or reject" on public.events;
--- This project previously used this name for the same Stage 8 policy.
-drop policy if exists "Moderators can review waiting events" on public.events;
 create policy "Moderators can approve or reject"
   on public.events for update
   to authenticated

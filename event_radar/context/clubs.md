@@ -12,6 +12,7 @@ It lives in the `clubs` table in Supabase (**Table Editor → clubs**), not in t
 | `usual_place_detail` | Room or other detail for the usual place. | `Room 220` |
 | `active` | Switch a club off instead of deleting it. | `true` |
 | `note` | Anything a moderator wants to remember about the club. | |
+| `added_on` | The day the club joined the list (Stage 15). A club in its first weeks posts under a moderator's eye: the **New-club wait** switch says how many days. | `2026-10-30` |
 
 What the agent does with it:
 

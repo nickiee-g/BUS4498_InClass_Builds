@@ -25,6 +25,15 @@ A BUS 4498 practice build (Week 9, Friday Build 3, and Week 10). Club officers p
 | **Lessons:** what moderators taught it | The `lessons` table | Signed-in moderators, on the website; each has an on/off switch | Read on every post; a lesson can make a post wait, never publish one |
 | **What it looked at** | `agent_notes` on each post | The agent | Shown to the poster and the moderator |
 
+## What the agent may do (Week 11)
+
+| | Where it lives | Who changes it | How the agent uses it |
+|---|---|---|---|
+| **The plan:** what it may do, where the limits are, when it asks, what it never does, who signs off | `runtime/permissions-plan.md`, in plain words | The builders, in the Agent Builder | Our AI assistant builds the switches and checks from it |
+| **Switches and limits:** publish on its own, paused, posts per day, days ahead, new-club wait | The `agent_permissions` table | Signed-in moderators, in the website's Permissions tab, with a reason | Read before every post; a change needs no redeploy |
+| **Test mode** | `dry_run` in a request | The builder's test cases | The agent decides and answers but saves nothing |
+| **Seconds and tokens** | `ms` and `usage` in every answer | The agent | The builder shows seconds and cost per test case |
+
 ## Files
 
 - `context/`: the posting rules, campus places, and what the club list holds (stable context).

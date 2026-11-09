@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>Mustang Events</title>
+<title>Club Event Radar</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <header class="topbar">
   <div class="wrap bar">
-    <a class="brand" href="#top"><span class="logo" aria-hidden="true"></span>Mustang Events</a>
+    <a class="brand" href="#top"><span class="logo" aria-hidden="true"></span>Club Event Radar</a>
     <nav class="actions" aria-label="Site actions">
       <span class="live" id="live" title="The board updates by itself"><span class="dot" aria-hidden="true"></span>Live</span>
       <button type="button" class="ghost small" id="openPost">+ Post<span class="long"> an event</span></button>
@@ -21,8 +21,8 @@
 
 <section class="hero" id="top">
   <div class="wrap">
-    <p class="kicker">Cal Poly clubs: this week</p>
-    <h1>Mustang Events</h1>
+    <p class="kicker">Campus clubs · live board</p>
+    <h1>What’s happening <em>on campus</em></h1>
     <p class="lede">Clubs post in their chat. An AI agent turns each post into a card, checks the posting rules, and remembers what it already posted.</p>
     <ul class="stats" aria-label="Board summary">
       <li><b id="statCount">0</b><span>events</span></li>
@@ -70,7 +70,7 @@
   </div>
 </aside>
 
-<!-- Moderator: sign-in, the review queue, the agent's lessons, and its permissions. Visitors never see this. -->
+<!-- Moderator: sign-in, the review queue, the agent's lessons, and the board tools. Visitors never see this. -->
 <aside class="drawer" id="modDrawer" aria-labelledby="modTitle" hidden>
   <div class="panel">
     <header class="panel-head">
@@ -89,7 +89,7 @@
       <p class="who">Signed in as <b id="modWho"></b> <button type="button" class="ghost small" id="signOutBtn">Sign out</button></p>
       <div class="tabs" role="tablist" aria-label="Moderator sections">
         <button type="button" class="tab" role="tab" data-tab="waiting" aria-selected="true">Waiting <span class="count" id="waitingCount">0</span></button>
-        <button type="button" class="tab" role="tab" data-tab="lessons" aria-selected="false">Lessons</button>
+        <button type="button" class="tab" role="tab" data-tab="lessons" aria-selected="false">Lessons <span class="count" id="lessonsCount">0</span></button>
         <button type="button" class="tab" role="tab" data-tab="permissions" aria-selected="false">Permissions</button>
       </div>
       <section class="tabpanel" data-panel="waiting">
@@ -97,21 +97,20 @@
         <ul id="waitingList" class="queue"></ul>
       </section>
       <section class="tabpanel" data-panel="lessons" hidden>
-        <h3>Teach the agent</h3>
-        <p class="muted">Write one lesson for future posts. Only signed-in moderators can teach the agent.</p>
+        <p class="muted">The agent reads every lesson that is switched on, with every post. Switch one off to make it forget.</p>
         <form id="teachForm" class="teach">
-          <label for="lessonText">Lesson <span class="hint">5–300 characters</span></label>
-          <textarea id="lessonText" rows="3" maxlength="300" minlength="5" required></textarea>
-          <button type="submit" id="teachBtn">Save lesson</button>
+          <label for="lessonText">Teach the agent something <span class="hint">One sentence. A lesson can make a post wait or shape the card. It can’t cancel a posting rule.</span></label>
+          <textarea id="lessonText" rows="2" maxlength="300" required placeholder="Drop-in study hours, tutoring, and office hours aren’t events for this website. Hold them for a moderator."></textarea>
+          <button type="submit" id="teachBtn">Save the lesson</button>
+          <p id="teachMsg" class="muted" role="status"></p>
         </form>
         <p id="lessonsStatus" class="muted" role="status"></p>
-        <ul id="lessonList" class="lessons"></ul>
+        <ul id="lessonsList" class="lessons"></ul>
       </section>
       <section class="tabpanel" data-panel="permissions" hidden>
-        <h3>Permissions (Week 11)</h3>
-        <p class="muted">Each change needs a reason. Changes are recorded with the signed-in moderator’s email.</p>
-        <p id="permissionsStatus" class="muted" role="status"></p>
-        <ul id="permissionList" class="lessons"></ul>
+        <p class="muted">What the agent may do on its own. It reads these switches with every post. To change one, type why first: the reason stays with the switch.</p>
+        <p id="permStatus" class="muted" role="status"></p>
+        <ul id="permList" class="perms"></ul>
       </section>
     </div>
   </div>

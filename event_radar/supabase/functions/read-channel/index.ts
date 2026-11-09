@@ -1,7 +1,25 @@
-// Reads new GroupMe messages and sends each message to submit-event once.
-// Secrets stay in Supabase Edge Functions → Secrets.
+// Club Event Radar: the chat-channel reader (Supabase Edge Function "read-channel"). Stage 14.
+//
+// It reads new messages from a GroupMe group and hands each one to the AI agent (submit-event),
+// as if a club officer had pasted it on the website. Two things can wake it up:
+//   - a scheduled job (Cron) every minute, and
+//   - GroupMe's callback, the moment someone posts (optional; it makes the website update within seconds).
+// Either way it does the same thing: it asks GroupMe for the messages after the last one it handled.
+// It never trusts what the knock on the door says; it always goes and reads the group itself.
+//
+// Memory: the channel_cursor table remembers the ID of the last message read, so no message is read
+// twice. If two runs overlap, the database refuses the second copy (events_one_per_message).
+//
+// Secrets (Edge Functions → Secrets): GROUPME_TOKEN (your GroupMe access token), GROUPME_GROUP_ID,
+// and GROUPME_BOT_ID (optional: the bot answers in the group with the agent's decision).
+// Deploy with JWT verification off (verify_jwt = false).
 
 import { createClient } from "npm:@supabase/supabase-js@2.117.2";
+
+const SOURCE = "groupme";
+const API = "https://api.groupme.com/v3";
+const MAX_PER_RUN = 20;      // GroupMe returns at most 100 per request; 20 keeps one run short
+const MAX_REPLY = 900;       // GroupMe messages hold 1,000 characters
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -9,190 +27,164 @@ const CORS = {
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
 
-type GroupMeMessage = {
-  id: string;
-  text?: string | null;
-  sender_id?: string;
-  name?: string;
-  sender_type?: string;
-  bot_id?: string;
-  system?: boolean;
-  system_message?: boolean;
-  created_at?: number;
-};
+type Msg = { id: string; text: string | null; name: string; user_id?: string; created_at?: number; sender_type?: string; system?: boolean };
+const THREAD_MINUTES = 10;   // the sender's messages from this many minutes before count as context
+const THREAD_MAX = 4;
+type Decision = { ok: boolean; status?: string; message?: string; reasons?: string[]; already_read?: boolean; event?: Record<string, unknown> | null };
 
-function json(status: number, data: Record<string, unknown>) {
-  return new Response(JSON.stringify(data), { status, headers: { ...CORS, "Content-Type": "application/json" } });
+function reply(status: number, body: Record<string, unknown>) {
+  return new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 }
 
-function credentials() {
-  return {
-    token: Deno.env.get("GROUPME_TOKEN") ?? "",
-    groupId: Deno.env.get("GROUPME_GROUP_ID") ?? "",
-    botId: Deno.env.get("GROUPME_BOT_ID") ?? "",
-  };
-}
-
+// The secret key for this project, which Supabase provides inside every Edge Function.
 function serverKey(): string {
   const keys = Deno.env.get("SUPABASE_SECRET_KEYS");
   if (keys) {
     try {
-      const key = JSON.parse(keys).default;
-      if (key) return key;
-    } catch (_) { /* use the compatibility key below */ }
+      const k = JSON.parse(keys)["default"];
+      if (k) return k;
+    } catch (_) { /* fall back to the legacy key below */ }
   }
   return Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 }
-
-function publishableKey(): string {
-  const keys = Deno.env.get("SUPABASE_PUBLISHABLE_KEYS");
-  if (keys) {
-    try {
-      const key = JSON.parse(keys).default;
-      if (key) return key;
-    } catch (_) { /* use the compatibility key below */ }
-  }
-  return Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+// The key the reader sends when it calls the agent, the same way the website does.
+function callerKey(): string {
+  return Deno.env.get("SUPABASE_PUBLISHABLE_KEY") ?? Deno.env.get("SUPABASE_ANON_KEY") ?? serverKey();
 }
 
-function dbClient() {
-  return createClient(Deno.env.get("SUPABASE_URL")!, serverKey(), { auth: { persistSession: false } });
+async function groupMeGet(path: string, token: string): Promise<{ status: number; messages: Msg[] }> {
+  const res = await fetch(API + path, { headers: { "X-Access-Token": token } });
+  if (res.status === 304) return { status: 304, messages: [] };
+  if (!res.ok) throw new Error(`GroupMe answered ${res.status} for ${path.split("?")[0]}. Check GROUPME_TOKEN and GROUPME_GROUP_ID.`);
+  const data = await res.json();
+  return { status: res.status, messages: (data?.response?.messages ?? []) as Msg[] };
 }
 
-async function groupMe(path: string, init: RequestInit = {}) {
-  const { token } = credentials();
-  return await fetch(`https://api.groupme.com/v3${path}`, {
-    ...init,
-    headers: { "X-Access-Token": token, "Content-Type": "application/json", ...(init.headers ?? {}) },
-  });
-}
-
-async function checkGroup() {
-  const { token, groupId } = credentials();
-  if (!token || !groupId) return { ok: false, message: "GROUPME_TOKEN or GROUPME_GROUP_ID is missing in Supabase Secrets." };
-  const response = await groupMe(`/groups/${encodeURIComponent(groupId)}`);
-  const data = await response.json();
-  if (!response.ok) {
-    const details = Array.isArray(data.meta?.errors) ? data.meta.errors.map(String).join("; ").slice(0, 240) : "";
-    return {
-      ok: false,
-      message: `GroupMe could not access the group (HTTP ${response.status}).`,
-      ...(details ? { details } : {}),
-    };
-  }
-  return { ok: true, message: "The GroupMe token and group work.", group: data.response?.name ?? "" };
-}
-
-async function readGroupMessages(afterId: string) {
-  const { groupId } = credentials();
-  const query = new URLSearchParams({ limit: "20" });
-  if (afterId) query.set("after_id", afterId);
-  const response = await groupMe(`/groups/${encodeURIComponent(groupId)}/messages?${query}`);
-  if (response.status === 304) return [];
-  if (!response.ok) throw new Error(`GroupMe messages request returned HTTP ${response.status}.`);
-  const data = await response.json();
-  return (data.response?.messages ?? []) as GroupMeMessage[];
-}
-
-async function senderThread(message: GroupMeMessage): Promise<string[]> {
-  if (!message.created_at || !message.sender_id) return [];
-  const query = new URLSearchParams({ before_id: message.id, limit: "20" });
-  const response = await groupMe(`/groups/${encodeURIComponent(credentials().groupId)}/messages?${query}`);
-  if (!response.ok) return [];
-  const data = await response.json();
-  const cutoff = message.created_at - 600;
-  return ((data.response?.messages ?? []) as GroupMeMessage[])
-    .filter((m) => m.sender_id === message.sender_id && Boolean(m.text?.trim()) && (m.created_at ?? 0) >= cutoff)
-    .sort((a, b) => (a.created_at ?? 0) - (b.created_at ?? 0))
-    .slice(-4)
-    .map((m) => `${m.name || "Member"}: ${m.text!.slice(0, 500)}`);
-}
-
-async function saveCursor(source: string, lastId: string, increment: number) {
-  const db = dbClient();
-  const { data: old } = await db.from("channel_cursor").select("read_count").eq("source", source).maybeSingle();
-  const { error } = await db.from("channel_cursor").upsert({
-    source,
-    last_id: lastId,
-    read_count: (old?.read_count ?? 0) + increment,
-    updated_at: new Date().toISOString(),
-  }, { onConflict: "source" });
-  if (error) throw new Error(`Cursor save failed: ${error.message}`);
-}
-
-async function readStatus() {
-  const { data, error } = await dbClient().from("channel_cursor")
-    .select("last_id, read_count, updated_at").eq("source", "groupme").maybeSingle();
-  if (error) throw new Error(`Cursor lookup failed: ${error.message}`);
-  return data;
-}
-
-async function processMessage(message: GroupMeMessage) {
-  if (!message.text?.trim() || message.sender_type === "bot" || message.bot_id || message.system || message.system_message) return;
-  const thread = await senderThread(message);
-  const base = Deno.env.get("SUPABASE_URL")!;
-  const result = await fetch(`${base}/functions/v1/submit-event`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", apikey: publishableKey() },
-    body: JSON.stringify({
-      announcement: message.text,
-      source: "groupme",
-      source_id: message.id,
-      source_name: message.name ?? "",
-      thread,
-    }),
-  });
-  const decision = await result.json();
-  if (decision.already_read) return;
-  const { botId } = credentials();
-  if (!botId) return;
-  const text = decision.ok
-    ? `${decision.status === "published" ? "Posted" : decision.status === "waiting" ? "Waiting for a moderator" : decision.status === "duplicate" ? "Already posted" : "Not posted"}: ${decision.event?.title || decision.message || "The agent reviewed this post."}`
-    : `The event agent couldn't read this post: ${decision.message || "please try again later."}`;
-  const posted = await groupMe("/bots/post", { method: "POST", body: JSON.stringify({ bot_id: botId, text: text.slice(0, 1000) }) });
-  if (!posted.ok) console.error("GroupMe bot reply failed", posted.status);
-}
-
-Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+// Short-term memory: the same person's messages from the minutes before this one, oldest first.
+// GroupMe returns the messages before an ID newest first.
+async function threadBefore(m: Msg, group: string, token: string): Promise<string[]> {
   try {
-    if (req.method === "GET") {
-      if (new URL(req.url).searchParams.get("check") === "groupme") return json(200, await checkGroup());
-      const { token, groupId } = credentials();
-      const cursor = await readStatus();
-      return json(200, {
-        ok: true,
-        ready: Boolean(token && groupId),
-        last_message_id: cursor?.last_id ?? "",
-        read_count: cursor?.read_count ?? 0,
-        bot: Boolean(credentials().botId),
+    const earlier = await groupMeGet(`/groups/${group}/messages?before_id=${encodeURIComponent(m.id)}&limit=10`, token);
+    const since = (m.created_at ?? 0) - THREAD_MINUTES * 60;
+    return earlier.messages
+      .filter((e) => e.user_id === m.user_id && !e.system && e.sender_type !== "bot" && (e.text ?? "").trim() && (e.created_at ?? 0) >= since)
+      .slice(0, THREAD_MAX).reverse().map((e) => (e.text ?? "").trim());
+  } catch (_) {
+    return [];
+  }
+}
+
+// The bot's answer in the group: what the agent decided, in one line.
+function fmtTime(t: unknown): string {
+  const m = /^(\d{2}):(\d{2})/.exec(String(t ?? ""));
+  if (!m) return "";
+  const h = Number(m[1]);
+  return `${h % 12 || 12}:${m[2]} ${h >= 12 ? "PM" : "AM"}`;
+}
+function fmtDate(d: unknown): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(d ?? ""));
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }) : "";
+}
+function replyText(who: string, d: Decision): string {
+  const ev = d.event ?? {};
+  const card = [ev.title, fmtDate(ev.event_date), fmtTime(ev.start_time), ev.place_name].filter(Boolean).join(" · ");
+  const reasons = (d.reasons ?? []).join(" ");
+  let text: string;
+  if (!d.ok) text = `⚠️ ${who}: the agent couldn't read that post. ${d.message ?? ""}`;
+  else if (d.status === "published") text = `✅ ${who}: posted on the website. ${card}`;
+  else if (d.status === "waiting") text = `⏳ ${who}: waiting for a moderator. ${reasons}`;
+  else if (d.status === "duplicate") text = `↩️ ${who}: already posted. ${reasons}`;
+  else text = `❌ ${who}: not posted. ${reasons}`;
+  return text.trim().slice(0, MAX_REPLY);
+}
+async function say(botId: string, text: string) {
+  const res = await fetch(`${API}/bots/post`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bot_id: botId, text }) });
+  if (!res.ok) console.error("The bot couldn't post its reply", res.status);
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+
+  const token = (Deno.env.get("GROUPME_TOKEN") ?? "").trim();
+  const group = (Deno.env.get("GROUPME_GROUP_ID") ?? "").trim();
+  const botId = (Deno.env.get("GROUPME_BOT_ID") ?? "").trim();
+  const db = createClient(Deno.env.get("SUPABASE_URL")!, serverKey(), { auth: { persistSession: false } });
+
+  // A quick check that the reader is set up, without reading the group.
+  if (req.method === "GET") {
+    const { data: cur } = await db.from("channel_cursor").select("last_id, read_count, updated_at").eq("source", SOURCE).maybeSingle();
+    const status: Record<string, unknown> = {
+      ok: true,
+      ready: Boolean(token && group),
+      source: SOURCE,
+      bot: Boolean(botId),
+      last_message_id: cur?.last_id ?? "",
+      read_count: cur?.read_count ?? 0,
+      last_run: cur?.updated_at ?? "",
+      message: token && group ? "The channel reader is set up." : "Add GROUPME_TOKEN and GROUPME_GROUP_ID in Edge Functions → Secrets.",
+    };
+    // ?check=groupme asks GroupMe whether the token and group work. It reports status codes only, never values.
+    if (new URL(req.url).searchParams.get("check") === "groupme" && token) {
+      const me = await fetch(`${API}/users/me`, { headers: { "X-Access-Token": token } });
+      // GroupMe has accepted the token in different places over the years; report which ones work today.
+      const meQuery = me.ok ? me : await fetch(`${API}/users/me?token=${encodeURIComponent(token)}`);
+      const meBearer = me.ok ? me : await fetch(`${API}/users/me`, { headers: { Authorization: `Bearer ${token}` } });
+      const grp = group ? await fetch(`${API}/groups/${encodeURIComponent(group)}`, { headers: { "X-Access-Token": token } }) : null;
+      status.groupme = {
+        token_length: token.length,
+        token_works: me.ok,
+        token_works_as_query: meQuery.ok,
+        token_works_as_bearer: meBearer.ok,
+        group_id_is_number: /^\d+$/.test(group),
+        group_found: grp ? grp.ok : false,
+        message: !me.ok ? `GroupMe rejected the token (${me.status}). Copy the Access Token again from dev.groupme.com into GROUPME_TOKEN.`
+          : grp && !grp.ok ? `The token works, but GroupMe can't find group ${group} for this account (${grp.status}). Check GROUPME_GROUP_ID.`
+          : "The token and the group ID work.",
+      };
+    }
+    return reply(200, status);
+  }
+  if (req.method !== "POST") return reply(405, { ok: false, message: "Send a POST request." });
+
+  // A POST comes from the scheduled job, from GroupMe's callback, or from a person. Its body is ignored on
+  // purpose: the reader fetches the messages itself, so nobody can feed it fake posts.
+  try {
+    if (!token || !group) return reply(503, { ok: false, message: "Add GROUPME_TOKEN and GROUPME_GROUP_ID in Edge Functions → Secrets." });
+
+    const { data: cur } = await db.from("channel_cursor").select("last_id, read_count").eq("source", SOURCE).maybeSingle();
+    let lastId = String(cur?.last_id ?? "");
+    const readCount = Number(cur?.read_count ?? 0);
+
+    // First run: remember where the group is now, and start with the next message. Old history is never read.
+    if (!lastId) {
+      const newest = await groupMeGet(`/groups/${group}/messages?limit=1`, token);
+      lastId = newest.messages[0]?.id ?? "0";
+      await db.from("channel_cursor").upsert({ source: SOURCE, last_id: lastId, read_count: 0, updated_at: new Date().toISOString() });
+      return reply(200, { ok: true, handled: 0, message: "First run: the reader will start with the next message posted in the group." });
+    }
+
+    const { messages } = await groupMeGet(`/groups/${group}/messages?after_id=${encodeURIComponent(lastId)}&limit=${MAX_PER_RUN}`, token);
+    const results: Record<string, unknown>[] = [];
+    for (const m of messages) {
+      lastId = m.id; // move the bookmark past every message, including the ones we skip
+      const text = (m.text ?? "").trim();
+      if (m.system || m.sender_type === "bot" || !text) continue;
+      const who = m.name || "Someone";
+      const thread = await threadBefore(m, group, token);
+      const res = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/submit-event`, {
+        method: "POST",
+        headers: { apikey: callerKey(), "Content-Type": "application/json" },
+        body: JSON.stringify({ announcement: text.slice(0, 2000), source: SOURCE, source_id: m.id, source_name: who, thread }),
       });
+      const decision: Decision = await res.json().catch(() => ({ ok: false, message: `The agent didn't answer (${res.status}).` }));
+      results.push({ id: m.id, from: who, status: decision.ok ? decision.status : "error", message: decision.message ?? "" });
+      // The agent already answered this message once (two runs overlapped), so don't answer again.
+      if (botId && !decision.already_read) await say(botId, replyText(who, decision));
     }
-    if (req.method !== "POST") return json(405, { ok: false, message: "Send a POST request." });
-
-    const { token, groupId } = credentials();
-    if (!token || !groupId) return json(503, { ok: false, message: "Add GROUPME_TOKEN and GROUPME_GROUP_ID in Supabase Secrets." });
-
-    const cursor = await readStatus();
-    const messages = await readGroupMessages(cursor?.last_id ?? "");
-    if (!cursor) {
-      const newest = messages.reduce((latest, m) => !latest || (m.created_at ?? 0) > (latest.created_at ?? 0) ? m : latest, null as GroupMeMessage | null)?.id ?? "";
-      if (newest) await saveCursor("groupme", newest, 0);
-      return json(200, { ok: true, initialized: true, last_message_id: newest, read_count: 0, messages: 0 });
-    }
-    if (!messages.length) return json(200, { ok: true, last_message_id: cursor.last_id, read_count: cursor.read_count, messages: 0 });
-
-    // The API returns newest first; handle the batch in chronological order.
-    const ordered = [...messages].sort((a, b) => (a.created_at ?? 0) - (b.created_at ?? 0));
-    for (const message of ordered) {
-      try { await processMessage(message); }
-      catch (error) { console.error(`Message ${message.id} failed`, error); }
-    }
-    const lastId = ordered.at(-1)?.id ?? cursor.last_id ?? "";
-    await saveCursor("groupme", lastId, ordered.length);
-    return json(200, { ok: true, last_message_id: lastId, read_count: cursor.read_count + ordered.length, messages: ordered.length });
-  } catch (error) {
-    console.error(error);
-    return json(500, { ok: false, message: "The GroupMe reader failed. Check its Supabase function logs." });
+    await db.from("channel_cursor").upsert({ source: SOURCE, last_id: lastId, read_count: readCount + results.length, updated_at: new Date().toISOString() });
+    return reply(200, { ok: true, handled: results.length, skipped: messages.length - results.length, results });
+  } catch (err) {
+    console.error(err);
+    return reply(502, { ok: false, message: err instanceof Error ? err.message : "Something went wrong in the channel reader. Check the function logs in Supabase." });
   }
 });
